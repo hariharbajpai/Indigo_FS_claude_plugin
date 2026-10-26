@@ -76,7 +76,27 @@ In claude.ai go to **Settings → Capabilities → Skills**, upload `safety-kb.z
    > "Do our SMS manual and audit handbook agree on report acknowledgement timelines?"
    > "@audit write a finding and CAP for this: ..."
 
-Revision update? Ingest the new file with the new `--rev`. The old revision moves to `_superseded/` and agents answer from the new one.
+### Many files, updates and replacements
+
+A department can hold as many documents as you like: one manual, ten SOPs, checklists, forms. Each file becomes one document (a folder of markdown). Upload several at once and say which department they belong to.
+
+Every upload is checked against what is already stored before anything is written:
+
+| Result | What happens |
+|---|---|
+| **New** | added as a new document; Claude confirms the revision it read from the cover |
+| **Duplicate** (identical file) | skipped, and you are told |
+| **Looks like a new version of a stored document** | **Claude asks you: update the existing document, or add it as a separate new one?** |
+| **Identical to an older, superseded revision** | Claude warns that this would roll the document back and asks |
+
+Then you steer with plain words:
+
+> "Yeh teen files sms me daal do." → one plan table, one set of questions, then ingest all.
+> "SMS Manual ko is file se replace karo." → the document is updated in place (same id); the old revision is archived and not searched.
+> "Yeh file sahi nahi thi, corrected wali se replace karo (same revision)." → forced re-issue of the same revision.
+> "Hazard Register SOP hata do." → withdrawn from search but kept on disk; nothing is hard-deleted.
+
+When a document is replaced or withdrawn, department memory notes that relied on the old version are flagged *verify before use*.
 
 ## Multi-agent in one chat
 
@@ -128,6 +148,9 @@ The same tool the skills use:
 
 ```bash
 python3 skills/safety-kb/scripts/kb.py ingest manual.pdf --dept sms --title "SMS Manual" --rev "Rev 05" --effective 2026-03-01
+python3 skills/safety-kb/scripts/kb.py match a.pdf b.docx c.pdf          # new, duplicate, or a new version of something stored?
+python3 skills/safety-kb/scripts/kb.py ingest new_issue.pdf --replace sms-manual --rev "Rev 6"
+python3 skills/safety-kb/scripts/kb.py retire hazard-register-sop --reason "superseded by company SOP"
 python3 skills/safety-kb/scripts/kb.py search "risk assessment matrix" --dept sms --dept shared
 python3 skills/safety-kb/scripts/kb.py status
 python3 skills/safety-kb/scripts/kb.py board show --open      # what departments are asking each other

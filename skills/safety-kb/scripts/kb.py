@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """safety-kb: turn manuals into a sectioned markdown knowledge base, and search it.
 
+  kb.py match  FILE...             is each file new, a duplicate, or a new version of a document already there?
   kb.py ingest FILE --dept DEPT [--title T] [--doc-id ID] [--rev R] [--effective YYYY-MM-DD]
                     [--force] [--layout] [--max-chars N]
+  kb.py ingest FILE --replace DOC_ID --rev R      update an existing document (old revision archived)
+  kb.py retire DOC_ID [--dept D] [--reason ...]   withdraw a document from search (kept, never deleted)
   kb.py search QUERY [--dept D ...] [--doc ID] [--top N] [--include-superseded] [--json]
   kb.py index                      rebuild INDEX.md files
   kb.py status                     show what the KB holds
@@ -370,9 +373,16 @@ def ingest(a: argparse.Namespace) -> None:
     if not src.is_file():
         die(f"file not found: {src}")
     kb = kb_root(a.kb)
-    dept = slugify(a.dept, 30)
-    title = a.title or re.sub(r"[_\-]+", " ", src.stem).strip()
-    doc_id = slugify(a.doc_id or title)
+    if a.replace:
+        dept, current = find_doc(kb, a.replace, a.dept)
+        doc_id = a.replace
+        title = a.title or current.get("doc") or doc_id
+    else:
+        if not a.dept:
+            die("--dept is required for a new document (or use --replace DOC_ID to update an existing one).")
+        dept = slugify(a.dept, 30)
+        title = a.title or re.sub(r"[_\-]+", " ", src.stem).strip()
+        doc_id = slugify(a.doc_id or title)
     rev = a.rev or "unspecified"
 
     md, has_pages = to_markdown(src, a.layout)
@@ -386,11 +396,13 @@ def ingest(a: argparse.Namespace) -> None:
     chunks = finalize_chunks(split_tree(secs, a.max_chars), a.max_chars)
 
     d = kb / dept / doc_id
+    prev_rev = ""
     if d.exists():
         old = fm_load((d / "_doc.md").read_text(encoding="utf-8"))[0] if (d / "_doc.md").exists() else {}
+        prev_rev = str(old.get("revision", ""))
         if old.get("revision") == rev and not a.force:
-            die(f"{dept}/{doc_id} revision '{rev}' is already ingested. Pass --force to replace it, "
-                f"or give the new revision with --rev.")
+            die(f"{dept}/{doc_id} revision '{rev}' is already ingested. Give the new revision with --rev, "
+                f"or pass --force if this is a corrected re-issue of the same revision.")
         arch = kb / dept / "_superseded" / f"{doc_id}__{slugify(str(old.get('revision', 'unknown')))}__{TODAY}"
         n = 2
         while arch.exists():
@@ -429,6 +441,8 @@ def ingest(a: argparse.Namespace) -> None:
     docmeta = {"doc": title, "doc_id": doc_id, "dept": dept, "revision": rev, "effective": a.effective or "",
                "status": "current", "source_file": src.name, "source_sha256": sha, "ingested": TODAY,
                "total_pages": last_page, "chunks": len(chunks)}
+    if prev_rev:
+        docmeta["replaces_revision"] = prev_rev
     (d / "_doc.md").write_text(
         fm_dump(docmeta) + f"# {title}\n\nRevision: {rev} · Effective: {a.effective or 'not recorded'} · "
         f"Department: {dept}\n\n## Contents\n\n" + "\n".join(toc) + "\n", encoding="utf-8")
@@ -473,9 +487,10 @@ def rebuild_index(kb: Path) -> None:
             lines.append("| _(none yet)_ | | | | | | |")
         if sup:
             lines += ["", "## Superseded revisions (not searched by default)", "",
-                      "| Document | Revision | Superseded on | Folder |", "|---|---|---|---|"]
+                      "| Document | Revision | Status | Since | Folder |", "|---|---|---|---|---|"]
             for m in sup:
-                lines.append(f"| {m.get('doc','')} | {m.get('revision','')} | {m.get('superseded_on','')} | `_superseded/{m['_folder']}/` |")
+                lines.append(f"| {m.get('doc','')} | {m.get('revision','')} | {m.get('status','superseded')} "
+                             f"| {m.get('superseded_on','')} | `_superseded/{m['_folder']}/` |")
         (dp / "INDEX.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
         root.append(f"| {dp.name} | {len(cur)} | [{dp.name}/INDEX.md]({dp.name}/INDEX.md) |")
     if not depts:
@@ -495,7 +510,7 @@ def status(a: argparse.Namespace) -> None:
         print(f"[{dp.name}] {len(rows)} document(s)")
         for m in rows:
             print(f"   - {m.get('doc')} · rev {m.get('revision')} · eff {m.get('effective') or 'n/a'} · "
-                  f"{m.get('total_pages') or '?'} pp · id={m.get('doc_id')}")
+                  f"{m.get('total_pages') or '?'} pp · id={m.get('doc_id')} · from {m.get('source_file')}")
 
 
 # --------------------------------------------------------------------------- search
@@ -616,6 +631,129 @@ def search(a: argparse.Namespace) -> None:
         print(f"[{i}] {r['dept'].upper()} · {r['doc']} · rev {r['revision']} · §{r['section']} · {page}  (score {r['score']}){flag}")
         print(f"    {r['file']}:{r['line']}")
         print(f"    …{r['snippet']}…\n")
+
+
+# --------------------------------------------------------------------------- matching, replacing, retiring
+
+def find_doc(kb: Path, doc_id: str, dept: str | None = None) -> tuple[str, dict]:
+    """Locate a current document by id. Returns (dept, _doc.md metadata) or exits with a helpful message."""
+    hits = []
+    for dp in sorted(p for p in kb.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))) if kb.is_dir() else []:
+        if dept and dp.name != slugify(dept, 30):
+            continue
+        f = dp / doc_id / "_doc.md"
+        if f.exists():
+            hits.append((dp.name, fm_load(f.read_text(encoding="utf-8"))[0]))
+    if not hits:
+        known = [m.get("doc_id") for dp in (kb.iterdir() if kb.is_dir() else []) if dp.is_dir() and not dp.name.startswith(("_", "."))
+                 for m in _doc_rows(dp)]
+        die(f"no current document with id '{doc_id}'" + (f" in {dept}" if dept else "") +
+            (f". Known ids: {', '.join(known)}." if known else ". The knowledge base is empty.") +
+            " To add it as a new document, drop --replace and give --dept.")
+    if len(hits) > 1:
+        die(f"id '{doc_id}' exists in several departments ({', '.join(h[0] for h in hits)}); add --dept.")
+    return hits[0]
+
+
+_REV_NOISE = re.compile(r"\b(?:rev(?:ision)?|amdt|amendment|issue|ver(?:sion)?|v|r)\s*0*\d+(?:\s\d+)*[a-z]?\b")
+_DATE_NOISE = re.compile(r"\b(?:19|20)\d{2}(?:\s\d{2}\s\d{2})?\b|\b(?:19|20)\d{6}\b")
+_WORD_NOISE = {"final", "draft", "copy", "new", "newer", "updated", "update", "latest", "pdf", "docx", "md", "txt",
+               "rev", "revision", "amdt", "amendment", "issue", "version", "the", "of"}
+
+
+def name_key(name: str) -> frozenset[str]:
+    """Reduce a file name or title to its identity words: revision numbers, dates and 'final/copy' are dropped."""
+    s = re.sub(r"[\W_]+", " ", re.sub(r"\(\d+\)", " ", name.lower()))  # "(1)" is what browsers append to repeat downloads
+    s = _DATE_NOISE.sub(" ", _REV_NOISE.sub(" ", s))
+    return frozenset(t for t in s.split() if t not in _WORD_NOISE)
+
+
+def name_sim(a: frozenset[str], b: frozenset[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return 1.0 if a == b else len(a & b) / len(a | b)
+
+
+def match_cmd(a: argparse.Namespace) -> None:
+    """Before ingesting: is each file new, a duplicate, or probably a new version of something already there?"""
+    kb = kb_root(a.kb)
+    docs = []
+    for dp in (sorted(p for p in kb.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))) if kb.is_dir() else []):
+        docs += [(dp.name, m, False) for m in _doc_rows(dp)]
+        if (dp / "_superseded").is_dir():
+            docs += [(dp.name, m, True) for m in _doc_rows(dp / "_superseded")]
+    report = []
+    for f in a.files:
+        p = Path(f).expanduser()
+        if not p.is_file():
+            report.append({"file": f, "action": "error", "note": "file not found"})
+            continue
+        sha = hashlib.sha256(p.read_bytes()).hexdigest()
+        key = name_key(p.stem)
+        dup = next(((d, m, old) for d, m, old in docs if m.get("source_sha256") == sha), None)
+        if dup:
+            d, m, old = dup
+            report.append({"file": f, "action": "ask_old_revision" if old else "skip_duplicate", "dept": d, "doc_id": m.get("doc_id"),
+                           "doc": m.get("doc"), "revision": m.get("revision"),
+                           "note": ("identical to an OLDER, superseded revision; ingesting it would roll the document back"
+                                    if old else "byte-for-byte identical to the current document; nothing to do")})
+            continue
+        cands = []
+        for d, m, old in docs:
+            if old:
+                continue
+            keys = {name_key(Path(m.get("source_file", "")).stem), name_key(m.get("doc", "")), name_key(str(m.get("doc_id", "")).replace("-", " "))}
+            best = max(name_sim(key, k) for k in keys)
+            if best >= 0.75:
+                cands.append((best, d, m))
+        cands.sort(key=lambda x: -x[0])
+        if cands:
+            report.append({"file": f, "action": "ask_update_or_new",
+                           "candidates": [{"similarity": round(s, 2), "dept": d, "doc_id": m.get("doc_id"), "doc": m.get("doc"),
+                                           "revision": m.get("revision"), "source_file": m.get("source_file")} for s, d, m in cands[:3]]})
+        else:
+            report.append({"file": f, "action": "new", "note": "no existing document looks like this one"})
+    if a.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return
+    for i, r in enumerate(report, 1):
+        print(f"[{i}] {Path(r['file']).name}")
+        if r["action"] == "new":
+            print("    NEW: nothing in the KB looks like it. Add as a new document.")
+        elif r["action"] == "skip_duplicate":
+            print(f"    DUPLICATE of {r['dept']}/{r['doc_id']} (rev {r['revision']}): {r['note']}")
+        elif r["action"] == "ask_old_revision":
+            print(f"    OLD REVISION: {r['note']} ({r['dept']}/{r['doc_id']}, rev {r['revision']}). Ask the user.")
+        elif r["action"] == "ask_update_or_new":
+            print("    ASK THE USER: update an existing document, or add as a new one?")
+            for c in r["candidates"]:
+                print(f"      · {c['dept']}/{c['doc_id']}  \"{c['doc']}\"  current rev {c['revision']}  (from {c['source_file']}, similarity {c['similarity']})")
+            print(f"      update: ingest \"{r['file']}\" --replace <doc_id> --rev \"<new revision>\"")
+            print(f"      new:    ingest \"{r['file']}\" --dept <dept> --doc-id <new-id> --title \"<title>\" --rev \"<revision>\"")
+        else:
+            print(f"    ERROR: {r['note']}")
+
+
+def retire_cmd(a: argparse.Namespace) -> None:
+    """Withdraw a document from search without deleting it (aviation records are kept)."""
+    kb = kb_root(a.kb)
+    dept, meta = find_doc(kb, a.doc_id, a.dept)
+    d = kb / dept / a.doc_id
+    arch = kb / dept / "_superseded" / f"{a.doc_id}__{slugify(str(meta.get('revision', 'unknown')))}__{TODAY}-withdrawn"
+    n = 2
+    while arch.exists():
+        arch = arch.with_name(f"{arch.name}-{n}")
+        n += 1
+    arch.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(d), str(arch))
+    m, body = fm_load((arch / "_doc.md").read_text(encoding="utf-8"))
+    m.update(status="withdrawn", superseded_on=TODAY, withdrawn_reason=a.reason or "")
+    (arch / "_doc.md").write_text(fm_dump(m) + body, encoding="utf-8")
+    stale = mark_memory_stale(kb, a.doc_id, str(meta.get("revision", "")))
+    rebuild_index(kb)
+    print(f"withdrew {dept}/{a.doc_id} (rev {meta.get('revision')}); kept in {arch.relative_to(kb)}, no longer searched")
+    if stale:
+        print(f"  {stale} memory note(s) relied on it and are now flagged 'verify before use'.")
 
 
 # --------------------------------------------------------------------------- shared state helpers
@@ -923,7 +1061,8 @@ def main() -> None:
 
     p = sub.add_parser("ingest", parents=[common], help="convert a manual into the knowledge base")
     p.add_argument("file")
-    p.add_argument("--dept", required=True, help="department folder, e.g. sms, audit, fdm, shared")
+    p.add_argument("--dept", help="department folder, e.g. sms, audit, fdm, shared (not needed with --replace)")
+    p.add_argument("--replace", metavar="DOC_ID", help="update this existing document with the file (old revision is archived)")
     p.add_argument("--title")
     p.add_argument("--doc-id")
     p.add_argument("--rev", help="revision / amendment, e.g. 'Rev 5' or 'Amdt 3'")
@@ -932,6 +1071,17 @@ def main() -> None:
     p.add_argument("--layout", action="store_true", help="pdftotext -layout (keeps table columns)")
     p.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
     p.set_defaults(fn=ingest)
+
+    p = sub.add_parser("match", parents=[common], help="check files against the KB: new, duplicate, or a new version of something there?")
+    p.add_argument("files", nargs="+")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=match_cmd)
+
+    p = sub.add_parser("retire", parents=[common], help="withdraw a document from search (kept on disk, never deleted)")
+    p.add_argument("doc_id")
+    p.add_argument("--dept")
+    p.add_argument("--reason")
+    p.set_defaults(fn=retire_cmd)
 
     p = sub.add_parser("search", parents=[common], help="keyword search with citations")
     p.add_argument("query")

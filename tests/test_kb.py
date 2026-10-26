@@ -93,6 +93,107 @@ class KbTests(unittest.TestCase):
         self.assertIn("[audit]", st)
 
 
+class MatchReplaceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.r05 = fixtures.make_md(self.tmp / "SMS_Manual_R05.md")
+        kb(self.tmp, "ingest", str(self.r05), "--dept", "sms", "--title", "SMS Manual", "--rev", "Rev 5")
+        self.r06 = self.tmp / "SMS_Manual_R06.md"
+        self.r06.write_text(self.r05.read_text().replace("within 24 hours", "within 12 hours"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def match(self, *files):
+        return json.loads(kb(self.tmp, "match", *map(str, files), "--json").stdout)
+
+    def test_batch_match_classifies_each_file(self):
+        copy = self.tmp / "copy of manual FINAL.md"
+        shutil.copy(self.r05, copy)
+        other = self.tmp / "Audit_Handbook_2026.md"
+        other.write_text("# Audit Handbook\n\nSomething else entirely about audit programmes.\n")
+        res = self.match(self.r06, copy, other)
+        self.assertEqual([r["action"] for r in res], ["ask_update_or_new", "skip_duplicate", "new"])
+        self.assertEqual(res[0]["candidates"][0]["doc_id"], "sms-manual")
+        self.assertEqual(res[1]["doc_id"], "sms-manual")
+
+    def test_names_that_differ_only_by_revision_still_match(self):
+        for name in ("SMS Manual v7.pdf", "sms-manual_Rev_06_2026-11-01.docx", "SMS_Manual (1).md"):
+            f = self.tmp / name
+            f.write_text("x")
+            self.assertEqual(self.match(f)[0]["action"], "ask_update_or_new", name)
+
+    def test_different_chapter_is_not_mistaken_for_same_document(self):
+        kb(self.tmp, "ingest", str(self.r05), "--dept", "sms", "--title", "Annex 19", "--rev", "1", "--doc-id", "annex-19")
+        f = self.tmp / "Annex_13.md"
+        f.write_text("x")
+        self.assertEqual(self.match(f)[0]["action"], "new")
+
+    def test_replace_updates_in_place_and_archives_old(self):
+        out = kb(self.tmp, "ingest", str(self.r06), "--replace", "sms-manual", "--rev", "Rev 6").stdout
+        self.assertIn("archived previous revision 'Rev 5'", out)
+        doc = (self.tmp / "safety-kb" / "sms" / "sms-manual" / "_doc.md").read_text()
+        self.assertIn('revision: "Rev 6"', doc)
+        self.assertIn('replaces_revision: "Rev 5"', doc)
+        self.assertIn('source_file: "SMS_Manual_R06.md"', doc)
+        hit = json.loads(kb(self.tmp, "search", "submit safety report hours", "--json").stdout)[0]
+        self.assertIn("12 hours", hit["snippet"])
+        self.assertEqual(len(list((self.tmp / "safety-kb" / "sms" / "_superseded").iterdir())), 1)
+
+    def test_replace_works_with_a_completely_different_file_name(self):
+        f = self.tmp / "Safety_Management_System_Issue6_FINAL.md"
+        f.write_text(self.r06.read_text())
+        kb(self.tmp, "ingest", str(f), "--replace", "sms-manual", "--rev", "Rev 6")
+        self.assertTrue((self.tmp / "safety-kb" / "sms" / "sms-manual" / "_doc.md").exists())
+        self.assertFalse((self.tmp / "safety-kb" / "sms" / "safety-management-system-issue6-final").exists())
+
+    def test_replace_refusals_leave_the_old_document_untouched(self):
+        same = kb(self.tmp, "ingest", str(self.r06), "--replace", "sms-manual", "--rev", "Rev 5", check=False)
+        self.assertIn("already ingested", same.stderr)
+        self.assertIn("--force", same.stderr)
+        unknown = kb(self.tmp, "ingest", str(self.r06), "--replace", "nope", "--rev", "Rev 6", check=False)
+        self.assertIn("Known ids: sms-manual", unknown.stderr)
+        wrong_dept = kb(self.tmp, "ingest", str(self.r06), "--replace", "sms-manual", "--dept", "audit", "--rev", "Rev 6", check=False)
+        self.assertNotEqual(wrong_dept.returncode, 0)
+        bad = self.tmp / "legacy.doc"
+        bad.write_text("binary")
+        legacy = kb(self.tmp, "ingest", str(bad), "--replace", "sms-manual", "--rev", "Rev 6", check=False)
+        self.assertNotEqual(legacy.returncode, 0)
+        doc = (self.tmp / "safety-kb" / "sms" / "sms-manual" / "_doc.md").read_text()
+        self.assertIn('revision: "Rev 5"', doc)  # a failed replace must not archive the good document
+        self.assertFalse((self.tmp / "safety-kb" / "sms" / "_superseded").exists())
+
+    def test_force_replaces_same_revision_corrected_reissue(self):
+        kb(self.tmp, "ingest", str(self.r06), "--replace", "sms-manual", "--rev", "Rev 5", "--force")
+        hit = json.loads(kb(self.tmp, "search", "submit safety report hours", "--json").stdout)[0]
+        self.assertIn("12 hours", hit["snippet"])
+
+    def test_old_revision_is_recognised_so_nobody_rolls_back_by_accident(self):
+        kb(self.tmp, "ingest", str(self.r06), "--replace", "sms-manual", "--rev", "Rev 6")
+        res = self.match(self.r05)
+        self.assertEqual(res[0]["action"], "ask_old_revision")
+
+    def test_new_document_in_same_dept_does_not_disturb_existing_one(self):
+        extra = self.tmp / "Hazard_Register_Procedure.md"
+        extra.write_text("# Hazard Register Procedure\n\nEntries are reviewed monthly.\n")
+        kb(self.tmp, "ingest", str(extra), "--dept", "sms", "--rev", "Rev 1")
+        status = kb(self.tmp, "status").stdout
+        self.assertIn("2 document(s)", status)
+        self.assertIn("id=sms-manual", status)
+
+    def test_retire_withdraws_without_deleting_and_flags_memory(self):
+        kb(self.tmp, "mem", "add", "--dept", "sms", "--kind", "source-map", "--text", "Ack deadline in 3.1",
+           "--src", "[SMS Manual Rev 5 §3.1]", "--doc", "sms-manual", "--rev", "Rev 5")
+        out = kb(self.tmp, "retire", "sms-manual", "--reason", "replaced by company-wide manual").stdout
+        self.assertIn("withdrew sms/sms-manual", out)
+        self.assertIn("1 memory note", out)
+        self.assertFalse((self.tmp / "safety-kb" / "sms" / "sms-manual").exists())
+        archived = next((self.tmp / "safety-kb" / "sms" / "_superseded").iterdir())
+        self.assertIn('status: "withdrawn"', (archived / "_doc.md").read_text())
+        self.assertIn("withdrawn", (self.tmp / "safety-kb" / "sms" / "INDEX.md").read_text())
+        self.assertNotEqual(kb(self.tmp, "search", "safety report", check=False).returncode, 0)  # nothing current to search
+
+
 class BoardTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

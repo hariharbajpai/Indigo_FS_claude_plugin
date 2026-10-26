@@ -11,7 +11,7 @@
       "name": "flight-safety-agents",
       "source": "./",
       "description": "Audit, SMS and FDM agents sharing one manual knowledge base, working together in a single chat.",
-      "version": "0.2.0"
+      "version": "0.3.0"
     }
   ]
 }

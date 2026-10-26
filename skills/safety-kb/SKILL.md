@@ -1,6 +1,6 @@
 ---
 name: safety-kb
-description: Build and query the flight-safety knowledge base. Use whenever the user uploads, attaches or mentions a manual, SOP, procedure, checklist, regulation or policy document (PDF, DOCX, MD, TXT) for Audit, SMS, FDM, Safety or any department, says "add/ingest/save this manual", "update to revision N", "load our manuals", or when any safety agent needs to look up what a manual says. Converts documents to sectioned markdown with revision and page tracking, and searches them with citations.
+description: Build, update and query the flight-safety knowledge base. Use whenever the user uploads, attaches or mentions one or several manuals, SOPs, procedures, checklists, regulations or policy documents (PDF, DOCX, MD, TXT) for Audit, SMS, FDM, Safety or any department; says "add/ingest/save these files", "replace this file with this one", "update to revision N", "remove/withdraw this document", "load our manuals"; or when any safety agent needs to look up what a manual says. Converts each file to sectioned markdown with revision and page tracking, checks every upload against what is already stored (new, duplicate, or a new version) and asks before updating, and searches with citations.
 ---
 
 # Safety knowledge base
@@ -15,23 +15,74 @@ This skill creates it (ingest) and reads it (search). Everything else in this pl
 - Layout, one folder per department: `safety-kb/<dept>/<doc-id>/NN-section.md`, plus `_doc.md` (table of contents), `<dept>/INDEX.md`, `INDEX.md`, `_superseded/` (older revisions) and `_outputs/` (reports the agents write). Details: `references/kb-layout.md`.
 - Use dept `shared` for material every team needs (regulations, ICAO/IOSA references, company risk matrix, glossary).
 
-## Ingesting a manual
+## Adding, updating and replacing documents
 
-When the user gives you a document ("this is our SMS manual", "yeh audit checklist save kar do"):
+A department can hold any number of documents (manual, SOPs, checklists, forms, regulations). **Each file becomes one document folder** (`safety-kb/<dept>/<doc-id>/`) of markdown. A new upload either creates a new document or updates an existing one; never guess which.
 
-1. **Find the file.** Use the path they gave, or the uploaded file (in claude.ai, look under `/mnt/user-data/uploads`). Several files: ingest them one by one.
-2. **Get the metadata right. This matters more than anything else here**, because every later answer cites it.
-   - Department: `audit`, `sms`, `fdm`, `shared`, or a custom one. If unclear, ask once; run `kb.py status` to show the existing ones.
-   - Revision/amendment and effective date: read the first pages, the list of effective pages or the revision record, and propose what you found ("looks like Revision 05, effective 01 Mar 2026, right?"). If you cannot find it, ask. If the user says to skip it, ingest with the default `unspecified` and tell them it will be flagged in every citation.
-   - Title: the document's real title, not the filename.
-3. **Run it:**
-   ```
-   python3 <skill>/scripts/kb.py ingest "<file>" --dept sms --title "Safety Management Manual" --rev "Rev 05" --effective 2026-03-01
-   ```
-   Add `--layout` for PDFs with many tables. Same revision again is refused unless `--force`; a new `--rev` automatically moves the old revision to `_superseded/`.
-4. **Check the result; do not trust it blindly.** Read the new `_doc.md` contents list. Open one or two chunk files and compare against the source: headings split sensibly, tables readable, page numbers plausible. If the script warns about few headings or a scanned PDF, say so and offer a fix (OCR with `ocrmypdf`, `--layout`, or splitting the document).
-5. **Report briefly:** document, department, revision, how many sections and pages, warnings. Never paste manual text back into chat just to show it worked.
-6. **Revision update?** Offer to summarise what changed between the old and new revision (search both with `--include-superseded` and compare), and remind the user that agents now answer from the new revision only.
+### 1. Look at what you were given
+
+Collect every file the user supplied (a path, several paths, or uploaded files; in claude.ai look under `/mnt/user-data/uploads`). For each, read the title page / first pages and note title, revision or amendment, effective date. See what is already stored: `kb.py status` (shows each document's id, revision and source file).
+
+### 2. Check every file against the KB (always, even for one file)
+
+```
+python3 <skill>/scripts/kb.py match "<file1>" "<file2>" "<file3>"
+```
+
+It compares each file by content hash and by name (revision numbers, dates, "FINAL", "(1)" are ignored) and reports one of:
+
+| Result | Meaning | What you do |
+|---|---|---|
+| **NEW** | nothing in the KB looks like it | add it as a new document; tell the user, no question needed (unless metadata is missing) |
+| **DUPLICATE** | identical bytes to the current document | skip it; tell the user it is already there (offer `--force` only if they insist) |
+| **ASK THE USER** | looks like a version of an existing document | **ask: update the existing document, or add as a new, separate one?** |
+| **OLD REVISION** | identical to an already superseded revision | warn that ingesting would roll back; ask what they want |
+
+Names can mislead, so also use what you read in step 1: if the title or document number clearly says it is the same document (or clearly a different one), say so when you ask or when you override a weak match. If `match` says NEW but the content is plainly a new issue of a stored document (renamed file), treat it as an update candidate and ask.
+
+### 3. One plan, one set of questions
+
+Show a short table for all files, then ask everything in one message, only about what is open:
+
+```
+| File | Plan |
+|---|---|
+| SMS_Manual_R06.pdf | ASK: update "SMS Manual" (now Rev 5) → Rev 6, or add as a new document? |
+| Hazard_Register_SOP.docx | NEW in sms. Revision? (I read "Issue 2, 14 Feb 2026" on the cover; correct?) |
+| SMS_Manual_R05.pdf | DUPLICATE of the current SMS Manual; skipping |
+```
+
+Also settle, per file, anything you could not read from the document: department (`audit`, `sms`, `fdm`, `shared`, a custom one), revision, effective date. Do not ask what you can read yourself; do not ask twice.
+
+### 4. Ingest
+
+New document:
+```
+python3 <skill>/scripts/kb.py ingest "<file>" --dept sms --title "Hazard Register SOP" --rev "Issue 2" --effective 2026-02-14
+```
+Update an existing document (the user said "update", or answered "update"; the file name does not matter, the document id decides):
+```
+python3 <skill>/scripts/kb.py ingest "<file>" --replace sms-manual --rev "Rev 6" --effective 2026-11-01
+```
+- The old revision is moved to `_superseded/` (kept for history, not searched). Memory notes that relied on it are flagged *verify before use*. The file is converted **before** anything is archived, so a failed conversion leaves the current document untouched.
+- Same revision, corrected file ("replace this file with the fixed one"): add `--force`.
+- Several files: run them one after another; report once at the end.
+- `--layout` for PDFs with many tables. A DOCX or MD is read directly; a scanned PDF needs OCR first.
+
+### 5. When the user gives an instruction instead of a file list
+
+- **"Replace X with this file"**: find X with `kb.py status` (match the title, id or source file name they used). One clear match: `ingest --replace <id>`. Several or none: ask which. Revision unknown: read it from the file, else ask.
+- **"Remove / withdraw X"**: confirm the document and the reason, then `kb.py retire <id> --reason "..."`. It leaves the search and is kept on disk; nothing is ever hard-deleted, because aviation records need history. Memory notes based on it are flagged.
+- **An amendment or temporary revision that changes only some pages**: add it as its own document in the same department (for example "SMS Manual Amendment 3") and add a `source-map` memory note saying it modifies the base document, unless the user supplies a full re-issue.
+- **Move a document to another department**: retire it, then ingest it again in the new department.
+
+### 6. Check the result; do not trust conversion blindly
+
+Read each new `_doc.md` contents list. Open one or two chunk files and compare against the source: headings split sensibly, tables readable, page numbers plausible. If the script warns about few headings or a scanned PDF, say so and offer a fix (OCR with `ocrmypdf`, `--layout`, splitting the document).
+
+### 7. Report briefly
+
+Per file: what happened (new / updated Rev 5 → Rev 6 / skipped duplicate / withdrawn), department, how many sections and pages, warnings. For updates, also say how many memory notes were flagged and offer a summary of what changed (search old and new with `--include-superseded` and compare). Never paste manual text back into chat just to show it worked.
 
 Page numbers are PDF page indexes, which can differ from the printed page labels in a manual. Say so if the user asks for exact page references.
 
