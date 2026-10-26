@@ -1,0 +1,12 @@
+# Company manuals and FDM data are confidential. They must never reach GitHub.
+/safety-kb/
+*.pdf
+*.docx
+*.doc
+*.xlsx
+*.csv
+!tests/fixtures/*.md
+
+dist/
+__pycache__/
+.DS_Store

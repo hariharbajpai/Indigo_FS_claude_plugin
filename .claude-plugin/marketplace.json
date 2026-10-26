@@ -1,0 +1,13 @@
+{
+  "name": "flight-safety-agents",
+  "owner": { "name": "flight-safety-agents contributors" },
+  "metadata": { "description": "Flight-safety department agents (Audit, SMS, FDM) that share one manual knowledge base." },
+  "plugins": [
+    {
+      "name": "flight-safety-agents",
+      "source": "./",
+      "description": "Audit, SMS and FDM agents sharing one manual knowledge base, working together in a single chat.",
+      "version": "0.1.0"
+    }
+  ]
+}
