@@ -22,14 +22,21 @@ Keep it in this shape so a coordinator, or a colleague agent in the same chat, c
 **Gaps:** what the KB does not cover, what needs a human decision or a document that is missing.
 **Needs from other departments:** "[FDM] last 12 months of exceedance rate for event X" (or "none").
 **Confidence:** high / medium / low, and why.
+**Memory:** notes added or forgotten this run (or "none").
 ```
 
 ## Handoffs between departments
 
-- A department asks another by naming it and the exact question under "Needs from other departments". It does not guess the other department's content.
-- The coordinator relays the question once (one extra round at most). Anything still open after that goes to the user as an open item.
+- A department asks another by posting on the board (`kb.py board post`, see the safety-kb skill) with the exact question, and lists the request id under "Needs from other departments". It does not guess the other department's content, and it labels its own position provisional until the answer arrives.
+- The coordinator runs the departments in rounds: addressees answer open requests, then requesters are re-run to finish with the answers. Up to 3 rounds unless the user sets another limit. Anything still open after that goes to the user as an open item.
 - A department answers cross-department questions from its own folder first, and from other folders only as read-only reference.
-- Only the owning department's folder is written to: `safety-kb/_outputs/<dept>/`.
+- Only the owning department's folder is written to: `safety-kb/_outputs/<dept>/`. The board is the only channel between departments.
+
+## Memory
+
+- Memory (`kb.py mem`) stores short, sourced pointers about how this operator works. It never replaces the manuals and never overrides them.
+- A department writes only to its own memory; `team` memory is for the coordinator and for conventions the user has confirmed.
+- No personal data, no raw FDM figures, no copied manual text. Say in the answer what was remembered.
 
 ## Guardrails that apply to everyone
 

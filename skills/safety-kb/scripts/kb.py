@@ -7,6 +7,9 @@
   kb.py index                      rebuild INDEX.md files
   kb.py status                     show what the KB holds
 
+  kb.py board post|inbox|answer|close|show|pending   messages between departments (_team/board.jsonl)
+  kb.py mem   add|show|search|forget                 per-department memory (_memory/<dept>.jsonl)
+
 KB location: --kb, else $SAFETY_KB_DIR, else ./safety-kb
 Layout:      <kb>/<dept>/<doc-id>/{_doc.md, NN-section.md}   (older revisions: <kb>/<dept>/_superseded/)
 
@@ -16,12 +19,14 @@ DOCX is read directly from its XML. Markdown and plain text are accepted as they
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import json
 import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -29,6 +34,11 @@ import zipfile
 import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
+
+try:
+    import fcntl  # type: ignore  (POSIX only; locking is best effort elsewhere)
+except ImportError:
+    fcntl = None
 
 TODAY = dt.date.today().isoformat()
 DEFAULT_MAX_CHARS = 24000
@@ -393,6 +403,9 @@ def ingest(a: argparse.Namespace) -> None:
             m.update(status="superseded", superseded_on=TODAY)
             (arch / "_doc.md").write_text(fm_dump(m) + body, encoding="utf-8")
         print(f"archived previous revision '{old.get('revision', 'unknown')}' to {arch.relative_to(kb)}")
+        stale = mark_memory_stale(kb, doc_id, str(old.get("revision", "")))
+        if stale:
+            print(f"  {stale} memory note(s) were based on the old revision and are now flagged 'verify before use'.")
     d.mkdir(parents=True)
 
     sha = hashlib.sha256(src.read_bytes()).hexdigest()
@@ -605,6 +618,301 @@ def search(a: argparse.Namespace) -> None:
         print(f"    …{r['snippet']}…\n")
 
 
+# --------------------------------------------------------------------------- shared state helpers
+
+def now() -> str:
+    return dt.datetime.now().isoformat(timespec="seconds")
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}-{dt.datetime.now().strftime('%y%m%d%H%M%S')}-{secrets.token_hex(2)}"
+
+
+@contextlib.contextmanager
+def locked(path: Path):
+    """Serialise read-modify-write on a state file so parallel agents don't clobber each other."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "w") as lk:
+        if fcntl:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+        yield
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    rows = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                pass
+    return rows
+
+
+def append_jsonl(path: Path, rec: dict) -> None:
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def write_jsonl(path: Path, rows: list[dict]) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+    tmp.replace(path)
+
+
+# --------------------------------------------------------------------------- team board
+
+MAX_REQUESTS_PER_THREAD = 8
+
+
+def board_path(kb: Path) -> Path:
+    return kb / "_team" / "board.jsonl"
+
+
+def _line(r: dict) -> str:
+    return (f"[{r['id']}] thread {r['thread']} · {r['from']} → {r['to']} · {r['kind']} · {r['status']} · {r['subject']}\n"
+            f"    {r['text']}")
+
+
+def board_post(a: argparse.Namespace) -> None:
+    path = board_path(kb_root(a.kb))
+    frm, to = slugify(a.sender, 30), slugify(a.to, 30)
+    if a.kind == "request" and to == "all":
+        die("a request must name one department (or 'user'). Use --kind note for broadcasts.")
+    if frm == to:
+        die("a department cannot post to itself.")
+    with locked(path):
+        rows = read_jsonl(path)
+        rid = new_id("b")
+        thread = a.thread or rid
+        if a.kind == "request":
+            reqs = [r for r in rows if r["thread"] == thread and r["kind"] == "request"]
+            if len(reqs) >= MAX_REQUESTS_PER_THREAD:
+                die(f"thread {thread} already has {len(reqs)} requests. It looks like a loop; escalate to the user instead.")
+            if any(r["kind"] == "request" and r["status"] == "open" and r["from"] == frm and r["to"] == to
+                   and r["subject"].lower() == a.subject.lower() for r in rows):
+                die("an identical open request already exists on the board. Wait for the answer instead of asking again.")
+        rec = {"id": rid, "ts": now(), "thread": thread, "from": frm, "to": to, "kind": a.kind,
+               "subject": a.subject, "text": " ".join(a.text.split()), "status": "open"}
+        append_jsonl(path, rec)
+    print(f"posted {rid} (thread {thread}) {frm} → {to}")
+
+
+def board_inbox(a: argparse.Namespace) -> None:
+    path = board_path(kb_root(a.kb))
+    me = slugify(a.dept, 30)
+    with locked(path):
+        rows = read_jsonl(path)
+        todo = [r for r in rows if r["kind"] in ("request", "note") and r["status"] == "open" and r["to"] in (me, "all") and r["from"] != me]
+        answers = [r for r in rows if r["kind"] == "answer" and r["status"] == "unread" and r["to"] == me]
+        if answers and not a.peek:
+            for r in rows:
+                if r in answers:
+                    r["status"] = "read"
+            write_jsonl(path, rows)
+    if a.json:
+        print(json.dumps({"requests": todo, "answers": answers}, indent=2, ensure_ascii=False))
+        return
+    if not todo and not answers:
+        print(f"inbox for {me}: empty")
+        return
+    if todo:
+        print(f"== Open for {me} (answer with: board answer ID --from {me} --text ...)")
+        print("\n".join(_line(r) for r in todo))
+    if answers:
+        print(f"== Answers to {me}'s requests")
+        print("\n".join(_line(r) for r in answers))
+
+
+def board_answer(a: argparse.Namespace) -> None:
+    path = board_path(kb_root(a.kb))
+    me = slugify(a.sender, 30)
+    with locked(path):
+        rows = read_jsonl(path)
+        req = next((r for r in rows if r["id"] == a.id and r["kind"] == "request"), None)
+        if not req:
+            die(f"no request with id {a.id}.")
+        if req["to"] != me:
+            die(f"request {a.id} is addressed to {req['to']}, not {me}.")
+        if req["status"] != "open":
+            die(f"request {a.id} is already {req['status']}.")
+        req["status"] = "answered"
+        rows.append({"id": new_id("b"), "ts": now(), "thread": req["thread"], "from": me, "to": req["from"], "kind": "answer",
+                     "reply_to": req["id"], "subject": f"Re: {req['subject']}", "text": " ".join(a.text.split()), "status": "unread"})
+        write_jsonl(path, rows)
+    print(f"answered {a.id}")
+
+
+def board_close(a: argparse.Namespace) -> None:
+    path = board_path(kb_root(a.kb))
+    with locked(path):
+        rows = read_jsonl(path)
+        hit = 0
+        for r in rows:
+            if r["id"] in a.ids and r["status"] not in ("closed",):
+                r["status"], r["closed_reason"] = "closed", a.reason or ""
+                hit += 1
+        write_jsonl(path, rows)
+    print(f"closed {hit} item(s)")
+
+
+def board_show(a: argparse.Namespace) -> None:
+    rows = read_jsonl(board_path(kb_root(a.kb)))
+    if a.thread:
+        rows = [r for r in rows if r["thread"] == a.thread]
+    if a.open:
+        rows = [r for r in rows if r["status"] in ("open", "unread")]
+    rows = rows[-a.limit:]
+    print("\n".join(_line(r) for r in rows) if rows else "board: nothing to show")
+
+
+def board_pending(a: argparse.Namespace) -> None:
+    """What the coordinator must act on: open requests (addressee runs next) and unread answers (requester runs next)."""
+    rows = read_jsonl(board_path(kb_root(a.kb)))
+    reqs: dict[str, list[str]] = {}
+    ans: dict[str, list[str]] = {}
+    for r in rows:
+        if r["kind"] == "request" and r["status"] == "open":
+            reqs.setdefault(r["to"], []).append(r["id"])
+        elif r["kind"] == "answer" and r["status"] == "unread":
+            ans.setdefault(r["to"], []).append(r["id"])
+    if a.json:
+        print(json.dumps({"requests": reqs, "answers": ans}, indent=2))
+        return
+    if not reqs and not ans:
+        print("pending: none")
+        return
+    for dept, ids in sorted(reqs.items()):
+        print(f"{'for the USER' if dept == 'user' else dept}: {len(ids)} open request(s): {', '.join(ids)}")
+    for dept, ids in sorted(ans.items()):
+        print(f"{dept}: {len(ids)} unread answer(s) to its requests: {', '.join(ids)}")
+
+
+# --------------------------------------------------------------------------- department memory
+
+MEM_KINDS = ("term", "source-map", "preference", "decision", "correction", "lesson")
+MAX_MEM_CHARS = 400
+
+
+def mem_path(kb: Path, dept: str) -> Path:
+    return kb / "_memory" / f"{slugify(dept, 30)}.jsonl"
+
+
+def has_pii(text: str) -> bool:
+    if re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text):
+        return True
+    return any(sum(c.isdigit() for c in m.group()) >= 10 for m in re.finditer(r"\+?\d[\d \-()]{8,}\d", text))
+
+
+def mem_add(a: argparse.Namespace) -> None:
+    kb = kb_root(a.kb)
+    text = " ".join(a.text.split())
+    if a.kind not in MEM_KINDS:
+        die(f"--kind must be one of: {', '.join(MEM_KINDS)}")
+    if len(text) > MAX_MEM_CHARS:
+        die(f"memory notes are short pointers (max {MAX_MEM_CHARS} chars). The manual itself is already in the KB; note where to look, not what it says.")
+    if has_pii(text) or has_pii(a.src):
+        die("this looks like it contains an email address or phone number. Memory must not hold personal data.")
+    path = mem_path(kb, a.dept)
+    with locked(path):
+        rows = read_jsonl(path)
+        for r in rows:
+            if r["status"] in ("active", "stale") and " ".join(r["text"].lower().split()) == text.lower():
+                r["confirmed"] = r.get("confirmed", 1) + 1
+                r["last_confirmed"] = now()
+                if r["status"] == "stale" and a.doc and a.rev:  # re-verified against the current revision
+                    r.update(status="active", doc=a.doc, rev=a.rev, src=a.src)
+                write_jsonl(path, rows)
+                print(f"already known; confirmed x{r['confirmed']} ({r['id']})")
+                return
+        rec = {"id": new_id("m"), "ts": now(), "dept": slugify(a.dept, 30), "kind": a.kind, "text": text, "src": a.src,
+               "doc": a.doc or "", "rev": a.rev or "", "status": "active", "confirmed": 1}
+        append_jsonl(path, rec)
+    print(f"remembered {rec['id']} [{rec['dept']}/{a.kind}]")
+
+
+def _mem_files(kb: Path, depts: list[str] | None) -> list[Path]:
+    d = kb / "_memory"
+    if depts:
+        return [mem_path(kb, x) for x in depts]
+    return sorted(d.glob("*.jsonl")) if d.is_dir() else []
+
+
+def mem_show(a: argparse.Namespace) -> None:
+    kb = kb_root(a.kb)
+    shown_any = False
+    out_json = []
+    for f in _mem_files(kb, a.dept):
+        rows = [r for r in read_jsonl(f) if r["status"] in ("active", "stale") and (not a.kind or r["kind"] == a.kind)]
+        if not rows:
+            continue
+        shown_any = True
+        active = sorted((r for r in rows if r["status"] == "active"), key=lambda r: (-r.get("confirmed", 1), r["ts"]), reverse=False)[: a.limit]
+        stale = [r for r in rows if r["status"] == "stale"]
+        if a.json:
+            out_json += active + stale
+            continue
+        print(f"## Memory: {f.stem} ({len(active)} active)")
+        for r in active:
+            print(f"- ({r['kind']}) {r['text']}  — src: {r['src']} · confirmed {r.get('confirmed', 1)}x · {r['ts'][:10]} · {r['id']}")
+        if stale:
+            print(f"### {f.stem}: VERIFY BEFORE USE (the source revision has been superseded)")
+            for r in stale:
+                print(f"- ({r['kind']}) {r['text']}  — src: {r['src']} · {r['id']}")
+        print()
+    if a.json:
+        print(json.dumps(out_json, indent=2, ensure_ascii=False))
+    elif not shown_any:
+        print("memory: empty")
+
+
+def mem_search(a: argparse.Namespace) -> None:
+    q = set(tokens(a.query))
+    hits = []
+    for f in _mem_files(kb_root(a.kb), a.dept):
+        for r in read_jsonl(f):
+            if r["status"] in ("active", "stale"):
+                score = len(q & set(tokens(r["text"] + " " + r["src"])))
+                if score:
+                    hits.append((score, r))
+    for _, r in sorted(hits, key=lambda x: -x[0])[: a.top]:
+        flag = " [VERIFY: source superseded]" if r["status"] == "stale" else ""
+        print(f"- [{r['dept']}/{r['kind']}] {r['text']}  — src: {r['src']} · {r['id']}{flag}")
+    if not hits:
+        print("memory: no match")
+
+
+def mem_forget(a: argparse.Namespace) -> None:
+    kb = kb_root(a.kb)
+    for f in _mem_files(kb, None):
+        with locked(f):
+            rows = read_jsonl(f)
+            hit = [r for r in rows if r["id"] == a.id]
+            if hit:
+                hit[0].update(status="forgotten", forgotten_on=TODAY, forgotten_reason=a.reason or "")
+                write_jsonl(f, rows)
+                print(f"forgot {a.id} ({f.stem})")
+                return
+    die(f"no memory with id {a.id}.")
+
+
+def mark_memory_stale(kb: Path, doc_id: str, old_rev: str) -> int:
+    """A manual was re-issued: flag notes that relied on the old revision so nobody trusts them blindly."""
+    n = 0
+    mem_dir = kb / "_memory"
+    for f in (sorted(mem_dir.glob("*.jsonl")) if mem_dir.is_dir() else []):
+        with locked(f):
+            rows = read_jsonl(f)
+            changed = False
+            for r in rows:
+                if r["status"] == "active" and r.get("doc") == doc_id and r.get("rev") == old_rev:
+                    r.update(status="stale", stale_since=TODAY)
+                    n, changed = n + 1, True
+            if changed:
+                write_jsonl(f, rows)
+    return n
+
+
 # --------------------------------------------------------------------------- cli
 
 def main() -> None:
@@ -639,6 +947,63 @@ def main() -> None:
 
     p = sub.add_parser("status", parents=[common], help="list what the KB holds")
     p.set_defaults(fn=status)
+
+    board = sub.add_parser("board", help="messages between departments").add_subparsers(dest="bcmd", required=True)
+    p = board.add_parser("post", parents=[common], help="ask another department (request) or inform it (note)")
+    p.add_argument("--from", dest="sender", required=True, help="your department")
+    p.add_argument("--to", required=True, help="department, 'user' (needs a human), or 'all' (notes only)")
+    p.add_argument("--kind", choices=["request", "note"], default="request")
+    p.add_argument("--subject", required=True)
+    p.add_argument("--text", required=True, help="the question or note; include what you already know and why you ask")
+    p.add_argument("--thread", help="reuse a thread id when following up")
+    p.set_defaults(fn=board_post)
+    p = board.add_parser("inbox", parents=[common], help="open requests for a department, plus answers to its own requests")
+    p.add_argument("--dept", required=True)
+    p.add_argument("--peek", action="store_true", help="do not mark answers as read")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=board_inbox)
+    p = board.add_parser("answer", parents=[common], help="answer a request addressed to you")
+    p.add_argument("id")
+    p.add_argument("--from", dest="sender", required=True)
+    p.add_argument("--text", required=True)
+    p.set_defaults(fn=board_answer)
+    p = board.add_parser("close", parents=[common], help="close items that are handled or no longer needed")
+    p.add_argument("ids", nargs="+")
+    p.add_argument("--reason")
+    p.set_defaults(fn=board_close)
+    p = board.add_parser("show", parents=[common], help="show the board, or one thread")
+    p.add_argument("--thread")
+    p.add_argument("--open", action="store_true")
+    p.add_argument("--limit", type=int, default=30)
+    p.set_defaults(fn=board_show)
+    p = board.add_parser("pending", parents=[common], help="which departments have open requests (for the coordinator)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=board_pending)
+
+    mem = sub.add_parser("mem", help="per-department memory").add_subparsers(dest="mcmd", required=True)
+    p = mem.add_parser("add", parents=[common], help="remember a durable, sourced fact or lesson")
+    p.add_argument("--dept", required=True, help="department name, or 'team' for shared notes")
+    p.add_argument("--kind", required=True, help=" | ".join(MEM_KINDS))
+    p.add_argument("--text", required=True, help=f"short pointer, max {MAX_MEM_CHARS} chars")
+    p.add_argument("--src", required=True, help="citation like '[SMS Manual Rev 5 §2.1, p.9]' or 'user, 2026-10-26'")
+    p.add_argument("--doc", help="doc id the note relies on (enables staleness checks)")
+    p.add_argument("--rev", help="revision of that document")
+    p.set_defaults(fn=mem_add)
+    p = mem.add_parser("show", parents=[common], help="read memory (default: every department)")
+    p.add_argument("--dept", action="append")
+    p.add_argument("--kind")
+    p.add_argument("--limit", type=int, default=40)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=mem_show)
+    p = mem.add_parser("search", parents=[common], help="search memory")
+    p.add_argument("query")
+    p.add_argument("--dept", action="append")
+    p.add_argument("--top", type=int, default=8)
+    p.set_defaults(fn=mem_search)
+    p = mem.add_parser("forget", parents=[common], help="retire a wrong or outdated note")
+    p.add_argument("id")
+    p.add_argument("--reason")
+    p.set_defaults(fn=mem_forget)
 
     args = ap.parse_args()
     args.fn(args)

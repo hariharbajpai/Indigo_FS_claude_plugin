@@ -16,10 +16,14 @@ safety-kb/
 │       └── sms-manual__rev-04__2026-10-26/     older revision, kept for history, not searched
 ├── audit/
 ├── fdm/
+├── _team/board.jsonl             requests and answers between departments
+├── _memory/<dept>.jsonl          what each department has learned (and team.jsonl)
 └── _outputs/<dept>/              reports and briefs written by agents
 ```
 
-Folders starting with `_` are not departments. `_outputs` and `_superseded` are skipped by search unless asked.
+Folders starting with `_` are not departments. `_outputs`, `_team`, `_memory` and `_superseded` are never searched as manuals. `_team` and `_memory` are plain JSON Lines files: one record per line, readable and editable by hand, written under a lock so parallel agents don't overwrite each other.
+
+Memory records carry `doc` and `rev`; when that document is re-issued with a new revision, the note is flagged `stale` and shown as *VERIFY BEFORE USE*.
 
 ## Chunk file front matter
 

@@ -1,6 +1,6 @@
 # flight-safety-agents
 
-A team of flight-safety department agents (**Audit, SMS, FDM**, plus any department you add) that share one knowledge base built from **your own manuals**. Upload a manual and it becomes searchable, revision-tracked markdown. Ask a question and the right departments answer from it, with citations, in the same chat.
+A team of flight-safety department agents (**Audit, SMS, FDM**, plus any department you add) that share one knowledge base built from **your own manuals**. Upload a manual and it becomes searchable, revision-tracked markdown. Ask a question and the right departments answer from it, with citations, in the same chat. Departments ask each other for input through a shared board and keep their own sourced memory, so they get better at your operation over time.
 
 > **Decision support only.** The agents draft, analyse and cross-check. Approvals, risk acceptance, finding closure and regulatory submissions stay with the accountable people.
 
@@ -34,7 +34,7 @@ A team of flight-safety department agents (**Audit, SMS, FDM**, plus any departm
 | `safety-kb` skill | Turns PDF/DOCX/MD/TXT manuals into markdown split by chapter and section, with page markers, revision and effective date. Keyword search that returns document, revision, section and page. Old revisions are kept aside and not searched. |
 | `sms-dept`, `audit-dept`, `fdm-dept` skills | What each department does: workflows, output templates, what to look up, what to cross-reference. |
 | `sms-agent`, `audit-agent`, `fdm-agent` | The same departments as subagents, so several can work in parallel in Claude Code. |
-| `safety-team` skill | The coordinator. Routes a request, runs departments in parallel (or in turn where subagents don't exist), does one round of hand-offs, then merges. |
+| `safety-team` skill | The coordinator. Routes a request, runs departments in parallel (or in turn where subagents don't exist), runs follow-up rounds while the board has open requests, then merges. |
 | `safety-add-department` skill | Creates a new department (skill + agent + KB folder) from a short interview. |
 
 ## Install
@@ -90,7 +90,31 @@ You steer it with plain words:
 | "SMS drafts, Audit reviews" | draft → review pattern |
 | "compare what SMS and Audit manuals say" | cross-check pattern |
 
-Each department answers in the same shape: **Position / Evidence (cited) / Gaps / Needs from other departments / Confidence**. The coordinator relays hand-offs for one round, then shows a combined view: agreements, conflicts (both sources cited, no silent winner), gaps and actions with owners.
+Each department answers in the same shape: **Position / Evidence (cited) / Gaps / Needs from other departments / Confidence / Memory**. The coordinator relays requests between departments in rounds (details below), then shows a combined view: agreements, conflicts (both sources cited, no silent winner), gaps and actions with owners.
+
+## Departments coordinating with each other
+
+Subagents cannot message each other live, so coordination goes through a **board** in the knowledge base (`safety-kb/_team/board.jsonl`) and the coordinator runs the departments in rounds:
+
+```
+Round 1   SMS, FDM, Audit work in parallel.
+          SMS posts to the board:  "FDM: unstable-approach rate by airport, last 12 months?"
+          SMS gives a provisional position.
+Round 2   FDM reads its inbox, answers with citations.
+Round 3   SMS reads the answer and finishes its position.   → combined view
+```
+
+- Each request names one department and carries the exact question. Identical open requests are refused, a thread is capped at 8 requests, and the coordinator stops after 3 follow-up rounds (you can ask for more). Anything unresolved, or addressed to you, is listed as an *open item*.
+- See what happened: `python3 skills/safety-kb/scripts/kb.py board show`, and the combined view ends with a one-line coordination trace.
+
+## Memory
+
+Each department keeps a small memory in `safety-kb/_memory/<dept>.jsonl`: terms your organisation uses, where the authoritative answer to a recurring question lives, your preferences and corrections, decisions (by role and date), recurring pitfalls. Every note has a source.
+
+- **Guardrails:** notes are short pointers (max 400 characters), not copies of manuals. Emails and phone numbers are rejected; the agents are told never to store names of crew or employees, or raw FDM figures. Memory is a hint, never a source: the manual wins, and the agent confirms in the manual before relying on a note.
+- **Stays correct:** when you ingest a new revision of a manual, notes that relied on the old one are flagged *VERIFY BEFORE USE* until an agent re-checks them or forgets them.
+- **You stay in control:** agents say what they remembered at the end of each answer. Review with `kb.py mem show`, remove with `kb.py mem forget <id>`.
+- Memory is local to your `safety-kb/` folder and, like the manuals, is not committed to git.
 
 ## Add your own department
 
@@ -106,6 +130,8 @@ The same tool the skills use:
 python3 skills/safety-kb/scripts/kb.py ingest manual.pdf --dept sms --title "SMS Manual" --rev "Rev 05" --effective 2026-03-01
 python3 skills/safety-kb/scripts/kb.py search "risk assessment matrix" --dept sms --dept shared
 python3 skills/safety-kb/scripts/kb.py status
+python3 skills/safety-kb/scripts/kb.py board show --open      # what departments are asking each other
+python3 skills/safety-kb/scripts/kb.py mem show               # what each department has learned
 ```
 
 KB location: `--kb DIR`, else `$SAFETY_KB_DIR`, else `./safety-kb`.
@@ -121,6 +147,8 @@ Manuals, FDM data and reports are confidential. `.gitignore` excludes `safety-kb
 - **Heading detection** for PDFs is heuristic (Chapter/Part/numbered headings). The ingest report shows how many headings were found; if few, check the chunk files or use `--layout`.
 - **Search is keyword-based** (BM25), not semantic. It works well on manuals because they use consistent terms; agents try several phrasings. For very large libraries, front it with a proper vector index or a document connector.
 - Legacy `.doc` is not read; save as `.docx`.
+- **Coordination is asynchronous.** A department sees another's answer in the next round, not mid-run. Claude Code's experimental agent-teams mode could allow live messaging; this plugin does not depend on it.
+- **Memory is only as good as what gets recorded.** Agents are told to record sparingly and with sources; review it now and then.
 - The department skills are frameworks. They do not contain your regulations or procedures, only how to work with them. Quality depends on the documents you ingest.
 
 ## Repository layout

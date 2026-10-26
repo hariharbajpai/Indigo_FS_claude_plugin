@@ -93,5 +93,115 @@ class KbTests(unittest.TestCase):
         self.assertIn("[audit]", st)
 
 
+class BoardTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def post(self, frm, to, subject, thread=None, check=True, kind="request"):
+        args = ["board", "post", "--from", frm, "--to", to, "--kind", kind, "--subject", subject, "--text", "details"]
+        if thread:
+            args += ["--thread", thread]
+        return kb(self.tmp, *args, check=check)
+
+    def test_request_answer_flow(self):
+        r = self.post("sms", "fdm", "Unstable approach rate")
+        bid = r.stdout.split()[1]
+        self.assertIn("fdm: 1 open", kb(self.tmp, "board", "pending").stdout)
+        self.assertIn(bid, kb(self.tmp, "board", "inbox", "--dept", "fdm").stdout)
+
+        wrong = kb(self.tmp, "board", "answer", bid, "--from", "audit", "--text", "x", check=False)
+        self.assertNotEqual(wrong.returncode, 0)
+        self.assertIn("addressed to fdm", wrong.stderr)
+
+        kb(self.tmp, "board", "answer", bid, "--from", "fdm", "--text", "1.8 per 1000 flights")
+        pend = kb(self.tmp, "board", "pending").stdout
+        self.assertNotIn("open request", pend)
+        self.assertIn("sms: 1 unread answer", pend)  # requester must be re-run to use the answer
+        first = kb(self.tmp, "board", "inbox", "--dept", "sms").stdout
+        self.assertIn("1.8 per 1000", first)
+        self.assertIn("empty", kb(self.tmp, "board", "inbox", "--dept", "sms").stdout)  # answers are marked read
+        self.assertIn("pending: none", kb(self.tmp, "board", "pending").stdout)
+
+    def test_guards(self):
+        self.post("sms", "fdm", "Same question")
+        dup = self.post("sms", "fdm", "same question", check=False)
+        self.assertIn("identical open request", dup.stderr)
+        self.assertNotEqual(self.post("sms", "all", "x", check=False).returncode, 0)  # requests need one addressee
+        self.assertNotEqual(self.post("sms", "sms", "x", check=False).returncode, 0)
+        thread = None
+        for i in range(8):
+            out = self.post("sms", "audit", f"q{i}", thread=thread).stdout
+            thread = thread or out.split("thread ")[1].split(")")[0]
+        loop = self.post("sms", "audit", "q-extra", thread=thread, check=False)
+        self.assertIn("loop", loop.stderr)
+
+    def test_escalate_to_user(self):
+        self.post("audit", "user", "Need the approved risk matrix")
+        self.assertIn("for the USER", kb(self.tmp, "board", "pending").stdout)
+
+    def test_parallel_writers_do_not_lose_data(self):
+        procs = [subprocess.Popen([sys.executable, "-I", str(KB_PY), "board", "post", "--from", "sms", "--to", "fdm",
+                                   "--subject", f"s{i}", "--text", "t", "--kb", str(self.tmp / "safety-kb")],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE) for i in range(10)]
+        for p in procs:
+            p.communicate()
+            self.assertEqual(p.returncode, 0)
+        rows = json.loads(kb(self.tmp, "board", "pending", "--json").stdout)
+        self.assertEqual(len(rows["requests"]["fdm"]), 10)
+        self.assertEqual(len(set(rows["requests"]["fdm"])), 10)
+
+
+class MemoryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def add(self, text, check=True, kind="term", dept="sms", extra=()):
+        return kb(self.tmp, "mem", "add", "--dept", dept, "--kind", kind, "--text", text, "--src", "[SMS Manual Rev 1 §2, p.3]", *extra, check=check)
+
+    def test_add_dedupe_show_forget(self):
+        r = self.add("SRB means Safety Review Board")
+        mid = r.stdout.split()[1]
+        self.assertIn("confirmed x2", self.add("SRB means Safety Review Board").stdout)
+        shown = kb(self.tmp, "mem", "show", "--dept", "sms").stdout
+        self.assertIn("SRB means", shown)
+        self.assertIn("confirmed 2x", shown)
+        kb(self.tmp, "mem", "forget", mid, "--reason", "wrong")
+        self.assertIn("memory: empty", kb(self.tmp, "mem", "show", "--dept", "sms").stdout)
+
+    def test_guardrails(self):
+        self.assertIn("personal data", self.add("Ask john.doe@example.com for the matrix", check=False).stderr)
+        self.assertIn("personal data", self.add("Call 9876543210 for the register", check=False).stderr)
+        self.assertIn("short pointers", self.add("x" * 401, check=False).stderr)
+        self.assertNotEqual(self.add("ok", kind="gossip", check=False).returncode, 0)
+        self.assertEqual(self.add("Revision dated 2026-03-01 applies").returncode, 0)  # a date is not a phone number
+
+    def test_note_goes_stale_when_manual_is_reissued(self):
+        f = fixtures.make_md(self.tmp / "sms.md")
+        kb(self.tmp, "ingest", str(f), "--dept", "sms", "--title", "SMS Manual", "--rev", "Rev 1")
+        self.add("Report acknowledgement deadline is in section 3.1", kind="source-map", extra=("--doc", "sms-manual", "--rev", "Rev 1"))
+        self.add("Unrelated note without a document link", kind="lesson")
+        out = kb(self.tmp, "ingest", str(f), "--dept", "sms", "--title", "SMS Manual", "--rev", "Rev 2").stdout
+        self.assertIn("1 memory note(s)", out)
+        shown = kb(self.tmp, "mem", "show", "--dept", "sms").stdout
+        self.assertIn("VERIFY BEFORE USE", shown)
+        self.assertIn("Unrelated note", shown.split("VERIFY BEFORE USE")[0])  # unaffected note stays active
+
+    def test_parallel_writers_do_not_lose_data(self):
+        procs = [subprocess.Popen([sys.executable, "-I", str(KB_PY), "mem", "add", "--dept", "fdm", "--kind", "lesson",
+                                   "--text", f"note {i}", "--src", "user, 2026-10-26", "--kb", str(self.tmp / "safety-kb")],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE) for i in range(10)]
+        for p in procs:
+            p.communicate()
+            self.assertEqual(p.returncode, 0)
+        rows = json.loads(kb(self.tmp, "mem", "show", "--dept", "fdm", "--json").stdout)
+        self.assertEqual(len(rows), 10)
+
+
 if __name__ == "__main__":
     unittest.main()

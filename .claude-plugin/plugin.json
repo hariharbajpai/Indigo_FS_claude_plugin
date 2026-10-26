@@ -1,6 +1,6 @@
 {
   "name": "flight-safety-agents",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A team of flight-safety department agents (Audit, SMS, FDM, and your own) that share one manual knowledge base. Upload a manual, it becomes searchable markdown; agents cite it and work together in one chat.",
   "author": {
     "name": "flight-safety-agents contributors"
