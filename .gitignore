@@ -10,3 +10,9 @@
 dist/
 __pycache__/
 .DS_Store
+.venv/
+node_modules/
+frontend/dist/
+*.db
+.pytest_cache/
+.coverage

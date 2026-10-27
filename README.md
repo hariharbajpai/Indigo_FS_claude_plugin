@@ -174,6 +174,42 @@ Manuals, FDM data and reports are confidential. `.gitignore` excludes `safety-kb
 - **Memory is only as good as what gets recorded.** Agents are told to record sparingly and with sources; review it now and then.
 - The department skills are frameworks. They do not contain your regulations or procedures, only how to work with them. Quality depends on the documents you ingest.
 
+## Flight Safety Command (v0.4.0): Chief, Vertical Heads, hiring and live dashboard
+
+On top of the plugin there is a small web app: a FastAPI backend (`backend/`), a React dashboard (`frontend/`) and a Chief agent (`agents/chief-agent.md`).
+
+### Chief
+**Dhruv Rebbapragada, Chief of Flight Safety**, is seeded on first start and cannot be retired. The Owner gives work to the Chief (Received -> Briefed -> In progress -> Done). The Chief writes a versioned brief and tasks, each owned by one department. If no department fits, the brief asks which department to add. Owner instructions (to the Chief or a department) re-plan the brief; conflicting in-flight tasks become `blocked`.
+
+### Vertical Heads and departments
+Add a department with one or more PDFs, a department name and a **Vertical Head name** (both required). PDFs go through the real `skills/safety-kb/scripts/kb.py`: `match` first (a duplicate or new version returns `needs_decision`, nothing is written), then `ingest` (or `ingest --replace` to update). Retiring a department withdraws its documents with `kb.py retire`; they stay on disk. The Head moves tasks (`in_progress`, `review`, `blocked`, `done`, note required).
+
+### Hiring
+A Vertical Head can hire agents for a task: cap 5 active agents per department, every hire (and refusal) is logged.
+
+### Dashboard
+Org chart, task board, work requests, and a chat feed with every message (Owner, Chief, Heads, hired agents, and the inter-department board mirrored from `kb.py board`). Updates arrive live over SSE (`/api/events`). The Owner can send further instructions at any time. API reference: `backend/API.md` (interactive docs at `/docs`).
+
+### Run
+```bash
+scripts/dev.sh        # creates .venv, npm install, starts backend :8000 and frontend :5173; Ctrl-C stops both
+```
+Needs `python3` (3.10+) and `node`/`npm` (18+); PDF text needs `pdftotext`, pypdf or PyMuPDF (as for `kb.py`). Backend only: `.venv/bin/python -m backend.fsa --port 8000`.
+
+Environment: `FSA_DB` (SQLite file, default `./safety-kb/_team/fsa.db`), `FSA_KB_ROOT` (knowledge-base root, default `./safety-kb`, git-ignored), `FSA_KB_SCRIPT` (alternative kb.py), `ANTHROPIC_API_KEY` and `FSA_MODEL` for a Claude planner. Without a key a deterministic keyword planner is used.
+
+### Tests
+```bash
+python3 -m unittest discover tests                                    # kb.py tests, standard library only
+.venv/bin/python -m pytest tests/backend                              # backend (pip install -r backend/requirements.txt first)
+cd frontend && npm install && npm test && npm run build               # frontend
+```
+
+### Known gaps
+- `/api/messages` returns at most 500 messages by default; the frontend has no paging.
+- The Vite proxy is hardcoded to `http://localhost:8000` (`frontend/vite.config.js`).
+- No browser-level end-to-end tests (frontend has unit tests only).
+
 ## Repository layout
 
 ```
@@ -183,15 +219,18 @@ skills/
   safety-team/         coordinator
   sms-dept/  audit-dept/  fdm-dept/
   safety-add-department/   + assets/ templates
-agents/                sms-agent, audit-agent, fdm-agent
-scripts/package-skills.sh
-tests/                 python3 -m unittest discover -s tests -v
+agents/                sms-agent, audit-agent, fdm-agent, chief-agent
+backend/               FastAPI app (Chief, departments, hiring, SSE) + API.md
+frontend/              React dashboard (Vite)
+scripts/package-skills.sh, scripts/dev.sh
+tests/                 python3 -m unittest discover -s tests -v   (backend tests in tests/backend, run with pytest)
 ```
 
 ## Development
 
 ```bash
 python3 -m unittest discover -s tests -v     # builds fictional PDF/DOCX/MD fixtures, no third-party libraries
+python3 -m pytest tests/backend              # web app backend (needs backend/requirements.txt)
 ```
 
 Contributions welcome: more departments (Investigation, Cabin, Ground, Maintenance safety), better table handling for PDFs, a semantic search backend. Do not commit real manuals or flight data.
