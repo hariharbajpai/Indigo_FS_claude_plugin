@@ -1,4 +1,4 @@
-# Flight Safety Command API (v0.7.0)
+# Flight Safety Command API (v0.8.0)
 
 Served by `backend/fsa/server.py` (Python standard library) together with the dashboard UI. `/flight-safety-agents:start` starts it on `http://127.0.0.1:4810` (or the next free port) and gives the Owner a link with `?token=...`.
 JSON everywhere except `POST /api/departments` (multipart) and `GET /api/events` (SSE). One local Owner.
@@ -124,7 +124,7 @@ data: {"id":55,"type":"message.created","ts":"...","data":{...}}
 ```
 Send `Last-Event-ID` (or `?since_id=55`) to replay missed events. A `: keepalive` comment is sent every 15s. The server also polls the DB every 0.5s so every change is pushed within 3s. UI pattern: on any event refetch the affected resource (`task.*` -> /api/tasks, `message.created` -> /api/messages, `brief.created`/`work_request.*` -> /api/work-requests, `agent.*`/`department.*` -> /api/org).
 
-### GET /api/health  ->  `{ "ok": true, "version": "0.7.0" }`  (no token needed)
+### GET /api/health  ->  `{ "ok": true, "version": "0.8.0" }`  (no token needed)
 
 ### Other paths
 Anything outside `/api/` serves the dashboard UI (`backend/fsa/web`); unknown paths return `index.html` so the UI can route itself.

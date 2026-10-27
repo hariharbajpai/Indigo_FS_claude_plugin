@@ -1,6 +1,6 @@
 {
   "name": "flight-safety-agents",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Flight-safety department agents (Audit, SMS, FDM, and your own) sharing one manual knowledge base, plus Flight Safety Command: a Chief of Flight Safety, Vertical Heads who hire specialists, and a live dashboard, all running as subagents inside Claude Code.",
   "author": {
     "name": "flight-safety-agents contributors"

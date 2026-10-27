@@ -39,18 +39,22 @@ export default function ChatFeed() {
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
   }
 
+  const kindOf = (id) => data.agents.find((a) => a.id === id)?.kind || 'hired'
   return (
-    <section>
-      <h2>Chat Feed</h2>
+    <>
       <FilterBar filters={filters} setFilters={setFilters} departments={data.departments} agents={data.agents} tasks={data.tasks} />
-      <div className="chat-list" ref={listRef} onScroll={onScroll} role="log" aria-live="polite" tabIndex={0}>
-        {all.length > shown.length && (
-          <button type="button" className="ghost" onClick={() => setLimit(limit + PAGE)}>Show {Math.min(PAGE, all.length - shown.length)} earlier messages</button>
-        )}
-        {shown.length === 0 && <p className="muted" style={{ padding: '.75rem' }}>{data.messages.length ? 'No messages match these filters.' : 'No messages yet.'}</p>}
-        {shown.map((m) => <MessageBubble key={m.id} m={m} />)}
+      <div className="card" style={{ padding: 0 }}>
+        <div className="chat-list" ref={listRef} onScroll={onScroll} role="log" aria-live="polite" tabIndex={0}>
+          {all.length > shown.length && (
+            <div style={{ padding: '10px 18px' }}>
+              <button type="button" className="ghost tiny" onClick={() => setLimit(limit + PAGE)}>Show {Math.min(PAGE, all.length - shown.length)} earlier messages</button>
+            </div>
+          )}
+          {shown.length === 0 && <p className="muted" style={{ padding: '18px' }}>{data.messages.length ? 'No messages match these filters.' : 'No messages yet.'}</p>}
+          {shown.map((m) => <MessageBubble key={m.id} m={m} kindOf={kindOf} />)}
+        </div>
       </div>
-      <p className="muted small">{all.length} message(s)</p>
-    </section>
+      <p className="muted small">{all.length} message{all.length === 1 ? '' : 's'}</p>
+    </>
   )
 }

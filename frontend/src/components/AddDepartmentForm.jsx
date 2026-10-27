@@ -1,3 +1,4 @@
+import { Icon } from './Icons.jsx'
 import { useState } from 'react'
 import { api } from '../api.js'
 
@@ -46,7 +47,8 @@ export default function AddDepartmentForm({ departments }) {
   return (
     <div className="card">
       <form onSubmit={submit} aria-label="Add department" noValidate>
-        <h3>Add department</h3>
+        <div className="card-title"><Icon name="building" /><h3>Add department</h3></div>
+        <p className="small muted">Its PDF manuals become the department's knowledge base; the Vertical Head runs it.</p>
         <label htmlFor="dept-files">PDF files</label>
         <input id="dept-files" type="file" accept="application/pdf,.pdf" multiple onChange={(e) => setFiles([...e.target.files])} />
         {errors.files && <p className="field-error" role="alert">{errors.files}</p>}
@@ -58,7 +60,7 @@ export default function AddDepartmentForm({ departments }) {
         {errors.headName && <p className="field-error" role="alert">{errors.headName}</p>}
         {state.error && <p className="field-error" role="alert">{state.error}</p>}
         {state.ok && <p className="banner ok" role="status">{state.ok}</p>}
-        <p><button disabled={state.busy}>{state.busy ? 'Working...' : 'Add department'}</button></p>
+        <button disabled={state.busy}>{state.busy ? 'Working...' : 'Add department'}</button>
       </form>
       {state.matches && (
         <div className="banner warn" role="status">
@@ -74,19 +76,21 @@ export default function AddDepartmentForm({ departments }) {
           <button type="button" className="ghost" onClick={() => send('new')}>Add as new</button>
         </div>
       )}
-      <h3>Manage departments</h3>
+      <div className="sub-title" style={{ marginTop: 22 }}>Manage departments</div>
       {departments.length === 0 ? <p className="muted">No departments yet.</p> : (
-        <ul>
+        <ul className="dept-list">
           {departments.map((d) => (
             <li key={d.id}>
-              {d.name} {d.status === 'retired' ? <span className="pill">retired</span> : (
-                <>
-                  <label className="small" style={{ display: 'inline', fontWeight: 400 }}>
-                    Replace PDFs <input type="file" accept=".pdf" multiple aria-label={`Replace PDFs for ${d.name}`}
-                      onChange={(e) => e.target.files.length && act(() => api.replaceDepartment(d.id, [...e.target.files]), `${d.name} replaced.`)} />
-                  </label>{' '}
-                  <button type="button" className="danger" onClick={() => window.confirm(`Retire ${d.name}? Its head and hired agents retire too.`) && act(() => api.retireDepartment(d.id), `${d.name} retired.`)}>Retire</button>
-                </>
+              <span className="name">{d.name}</span>
+              {d.status === 'retired' ? <span className="pill">retired</span> : (
+                <span className="row-actions">
+                  <label className="file-button">
+                    Update PDFs
+                    <input type="file" accept=".pdf" multiple className="visually-hidden" aria-label={`Replace PDFs for ${d.name}`}
+                      onChange={(e) => e.target.files.length && act(() => api.replaceDepartment(d.id, [...e.target.files]), `${d.name} updated with the new PDFs.`)} />
+                  </label>
+                  <button type="button" className="danger tiny" onClick={() => window.confirm(`Retire ${d.name}? Its head and hired agents retire too.`) && act(() => api.retireDepartment(d.id), `${d.name} retired.`)}>Retire</button>
+                </span>
               )}
             </li>
           ))}

@@ -174,7 +174,7 @@ Manuals, FDM data and reports are confidential. `.gitignore` excludes `safety-kb
 - **Memory is only as good as what gets recorded.** Agents are told to record sparingly and with sources; review it now and then.
 - The department skills are frameworks. They do not contain your regulations or procedures, only how to work with them. Quality depends on the documents you ingest.
 
-## Flight Safety Command (v0.7.0): a Chief, Vertical Heads and a live dashboard, inside Claude Code
+## Flight Safety Command (v0.8.0): a Chief, Vertical Heads and a live dashboard, inside Claude Code
 
 Flight Safety Command runs a small flight-safety organisation as **subagents in your Claude Code session** (desktop app, IDE or terminal), on your own login. No API key, no terminal, nothing to install beyond the plugin.
 
@@ -221,7 +221,7 @@ Files are written with the Python standard library (Office Open XML), so nothing
 The Chief starts as **Dhruv Rebbapragada**, and every name is the Owner's to change: the Chief, any Vertical Head, any hired specialist, and department display names. Use `/flight-safety-agents:rename <who> -> <new name>` or the Rename buttons in the Org Chart. Only the name changes: ids, tasks, history and the department's knowledge-base folder stay. The renamed agent gets a note, the Chat Feed logs it, and every prompt, report and dashboard view uses the new name from then on. Two active agents (or departments) cannot share a name.
 
 ### Dashboard
-Overview (work requests, briefs, progress, **files built with Download links**, **who is working now**, recent agent runs), Task Board (kanban with each task's note history), Org Chart (Chief → Heads → hired specialists, with hire reasons and Rename buttons; agents at work are highlighted), Chat Feed (every message between you and the agents, filterable by department, agent and task) and Owner Console (new work, instructions, add/update/retire departments). Updates are live. Work or instructions sent from the dashboard are picked up when you run `/flight-safety-agents:run` in Claude Code; the dashboard reminds you.
+A dark, gold-accented control room with a left sidebar (it becomes a top bar on phones) that also shows the live connection, how many agents are working and the Chief. Pages: Overview (key figures, work requests, briefs, progress, **files built with Download links**, **who is working now**, recent agent runs), Task Board (kanban with each task's note history), Organisation (an org chart: the Chief at the top, a branch per department with its Vertical Head and hired specialists, hire reasons, team size against the cap of 5, Rename on every card, agents at work highlighted), Communications (every message between you and the agents with avatars, message type and task, filterable by department, agent and task) and Owner Console (new work, instructions, add/update/retire departments). Updates are live. Work or instructions sent from the dashboard are picked up when you run `/flight-safety-agents:run` in Claude Code; the dashboard reminds you.
 
 The dashboard server binds to 127.0.0.1 only, accepts only local Host headers and needs the token from the `/start` link for every API call.
 

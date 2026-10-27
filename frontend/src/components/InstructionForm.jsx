@@ -1,3 +1,4 @@
+import { Icon } from './Icons.jsx'
 import { useState } from 'react'
 import { api } from '../api.js'
 
@@ -17,7 +18,8 @@ export default function InstructionForm({ departments }) {
   }
   return (
     <form className="card" onSubmit={submit} aria-label="Send instruction">
-      <h3>Send instruction</h3>
+      <div className="card-title"><Icon name="steer" /><h3>Steer the team</h3></div>
+      <p className="small muted">An instruction mid-way: the Chief re-plans, conflicting tasks are blocked.</p>
       <label htmlFor="ins-target">To</label>
       <select id="ins-target" value={target} onChange={(e) => setTarget(e.target.value)}>
         <option value="chief">Chief</option>
