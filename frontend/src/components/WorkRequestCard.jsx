@@ -1,6 +1,7 @@
 import BriefPanel from './BriefPanel.jsx'
+import FileList from './FileList.jsx'
 
-export default function WorkRequestCard({ wr, briefs, tasks }) {
+export default function WorkRequestCard({ wr, briefs, tasks, files = [] }) {
   const mine = briefs.filter((b) => b.work_request_id === wr.id)
   const latest = mine.reduce((a, b) => (!a || b.version > a.version ? b : a), null)
   const pct = Math.max(0, Math.min(100, Math.round(wr.progress ?? 0)))
@@ -16,7 +17,8 @@ export default function WorkRequestCard({ wr, briefs, tasks }) {
       </div>
       <p className="muted small">{pct}% complete, {count.filter((t) => t.status === 'done').length}/{count.length} tasks done</p>
       <BriefPanel brief={latest} />
-      {wr.report && <div className="banner ok"><strong>Completion report:</strong> {wr.report}</div>}
+      <FileList files={files.filter((f) => f.work_request_id === wr.id)} />
+      {wr.report && <div className="banner ok report"><strong>Completion report:</strong> {wr.report}</div>}
     </article>
   )
 }

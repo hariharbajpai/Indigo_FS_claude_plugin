@@ -14,7 +14,7 @@ export default function Overview() {
       <ActivityPanel activity={data.activity} />
       {list.length === 0
         ? <p className="muted">No work requests yet. In Claude Code run /flight-safety-agents:work, or send one from the Owner Console.</p>
-        : list.map((w) => <WorkRequestCard key={w.id} wr={w} briefs={data.briefs} tasks={data.tasks} />)}
+        : list.map((w) => <WorkRequestCard key={w.id} wr={w} briefs={data.briefs} tasks={data.tasks} files={data.files} />)}
     </section>
   )
 }

@@ -1,5 +1,5 @@
-"""Flight Safety Command backend (v0.5.0). Standard library only."""
-VERSION = "0.5.0"
+"""Flight Safety Command backend (v0.6.0). Standard library only."""
+VERSION = "0.6.0"
 PLUGIN = "flight-safety-agents"
 CHIEF_ID = "chief"
 CHIEF_NAME = "Dhruv Rebbapragada"

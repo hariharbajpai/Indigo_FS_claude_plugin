@@ -24,8 +24,9 @@ INSTRUCTIONS = (
     "The Owner works through /flight-safety-agents:start, add-dept, work, tell, run and status. When a command "
     "runs the work loop, call next_work, start one Agent per activation exactly as given, and call "
     "activation_done with each agent's final report. The agent tools (get_briefing, send_message, submit_brief, "
-    "report_to_owner, update_task, hire_agent, assign_task, search_manuals, read_section, save_output) belong to "
-    "the subagents and need their activation id.")
+    "report_to_owner, update_task, hire_agent, assign_task, search_manuals, read_section, save_output, build_file) "
+    "belong to the subagents and need their activation id. Files the team builds (PPT, Word, Excel) are listed with "
+    "their paths in the Chief's report.")
 
 S = {"type": "string"}
 ACT = {"type": "string", "description": "Your activation id (from your prompt)"}
@@ -38,6 +39,14 @@ def obj(props, required=()):
 TASK_ITEM = obj({"title": S, "dept": {"type": "string", "description": "Department id"},
                  "description": S, "acceptance": {"type": "string", "description": "Acceptance criteria"}},
                 ["title", "dept"])
+
+CONTENT_HELP = (
+    "pptx: {\"subtitle\": str, \"slides\": [{\"title\": str, \"bullets\": [str or {\"text\": str, \"level\": 1}], "
+    "\"table\": {\"columns\": [str], \"rows\": [[cell]]}, \"note\": str (e.g. the source)}]} (at most 12 bullets and "
+    "15 table rows per slide). docx: {\"subtitle\": str, \"sections\": [{\"heading\": str, \"level\": 1-3, "
+    "\"paragraphs\": [str], \"bullets\": [...], \"table\": {...}}]}. xlsx: {\"sheets\": [{\"name\": str, "
+    "\"columns\": [str], \"rows\": [[text or number]]}]}. Text may use **bold**.")
+DELIVERABLE = obj({"format": {"type": "string", "enum": ["pptx", "docx", "xlsx"]}, "title": S}, ["format"])
 
 TOOLS = [
     # ---- Owner / office manager ----
@@ -76,10 +85,16 @@ TOOLS = [
                      "Re-plan: change_note, block_task_ids for conflicting tasks, new tasks.",
      obj({"activation": ACT, "work_request_id": S, "summary": S, "goals": {"type": "array", "items": S},
           "tasks": {"type": "array", "items": TASK_ITEM}, "change_note": S,
-          "block_task_ids": {"type": "array", "items": S}, "question": S},
+          "block_task_ids": {"type": "array", "items": S}, "question": S,
+          "deliverables": {"type": "array", "items": DELIVERABLE,
+                           "description": "Files the Owner asked for (PPT, Word, Excel); kept from the last brief "
+                                          "if omitted"}},
          ["activation", "work_request_id", "summary"])),
-    ("report_to_owner", "Chief only: send the Owner the completion report for a work request.",
-     obj({"activation": ACT, "work_request_id": S, "text": S}, ["activation", "work_request_id", "text"])),
+    ("report_to_owner", "Chief only: send the Owner the completion report for a work request. Paths of the files "
+                        "built are added for you. Refused while a requested deliverable is missing, unless "
+                        "missing_reason says why it cannot be made.",
+     obj({"activation": ACT, "work_request_id": S, "text": S, "missing_reason": S},
+         ["activation", "work_request_id", "text"])),
     ("update_task", "Vertical Head or specialist: change a task's status (todo, in_progress, review, blocked, done) "
                     "with a note. Done notes sum up the result and give the output file path.",
      obj({"activation": ACT, "task_id": S, "status": {"type": "string",
@@ -102,6 +117,13 @@ TOOLS = [
                     "request id). Returns the file path to put in your task note.",
      obj({"activation": ACT, "task_id": S, "title": S, "content": {"type": "string", "description": "Markdown"}},
          ["activation", "task_id", "title", "content"])),
+    ("build_file", "Agent: build a real PowerPoint (pptx), Word (docx) or Excel (xlsx) file for a task (or, for the "
+                   "Chief, a work request id) from structured content; sources become a final Sources slide, section "
+                   "or sheet. Returns the path. Content: " + CONTENT_HELP,
+     obj({"activation": ACT, "task_id": S, "format": {"type": "string", "enum": ["pptx", "docx", "xlsx"]},
+          "title": S, "content": {"type": "object", "description": CONTENT_HELP},
+          "sources": {"type": "array", "items": S, "description": "Citations: document, revision, section, page"}},
+         ["activation", "task_id", "format", "title", "content"])),
 ]
 
 
@@ -137,7 +159,8 @@ class Company:
                                "hired": [f"{a['name']} ({a['role']})" for a in r["agents"]],
                                "active_agents": r["active_count"]} for r in s.org_chart()["departments"]]
         out["work_requests"] = [{"id": w["id"], "status": w["status"], "text": w["text"][:200],
-                                 "brief_version": w["brief_version"], "progress": w["progress"]}
+                                 "brief_version": w["brief_version"], "progress": w["progress"],
+                                 "files": [f["path"] for f in s.list_files(w["id"])]}
                                 for w in s.list_work_requests()[:10]]
         act = o.activity()
         out["working_now"] = [a["agent_name"] for a in act["running"]]
@@ -186,12 +209,15 @@ class Company:
         return self.office.tool_send_message(activation, to, text, task_id or None)
 
     def submit_brief(self, activation, work_request_id, summary, goals=None, tasks=None, change_note=None,
-                     block_task_ids=None, question=None):
+                     block_task_ids=None, question=None, deliverables=None):
         return self.office.tool_submit_brief(activation, work_request_id, summary, goals, tasks, change_note or None,
-                                             block_task_ids, question or None)
+                                             block_task_ids, question or None, deliverables)
 
-    def report_to_owner(self, activation, work_request_id, text):
-        return self.office.tool_report(activation, work_request_id, text)
+    def report_to_owner(self, activation, work_request_id, text, missing_reason=None):
+        return self.office.tool_report(activation, work_request_id, text, missing_reason or None)
+
+    def build_file(self, activation, task_id, format, title, content, sources=None):
+        return self.office.tool_build_file(activation, task_id, format, title, content, sources)
 
     def update_task(self, activation, task_id, status, note):
         return self.office.tool_update_task(activation, task_id, status, note)

@@ -1,4 +1,4 @@
-# Flight Safety Command API (v0.5.0)
+# Flight Safety Command API (v0.6.0)
 
 Served by `backend/fsa/server.py` (Python standard library) together with the dashboard UI. `/flight-safety-agents:start` starts it on `http://127.0.0.1:4810` (or the next free port) and gives the Owner a link with `?token=...`.
 JSON everywhere except `POST /api/departments` (multipart) and `GET /api/events` (SSE). One local Owner.
@@ -20,7 +20,11 @@ WorkRequest{ "id":"WR-1","text":"...","status":"Received|Briefed|In progress|Don
              "progress":{"total":4,"done":1,"percent":25} }
 Brief      { "work_request_id":"WR-1","version":2,"summary":"...","goals":["..."],
              "departments":["engine-maintenance"],"needs_department":false,"question":null|"Which department should handle this? ...",
-             "change_note":null|"Owner instruction: ...","created_at":"..." }
+             "change_note":null|"Owner instruction: ...",
+             "deliverables":[{"format":"pptx|docx|xlsx","title":"Q3 Hazard Review"}],"created_at":"..." }
+File       { "id":3,"work_request_id":"WR-1","task_id":"TK-2"|null,"format":"pptx|docx|xlsx","title":"Q3 Hazard Review",
+             "path":"/project/safety-kb/_outputs/WR-1/Q3-Hazard-Review.pptx","name":"Q3-Hazard-Review.pptx","size":11349,
+             "created_by":"chief","created_by_name":"Dhruv Rebbapragada","created_at":"..." }
 Task       { "id":"TK-1","title":"...","description":"...","acceptance":"...","dept":"engine-maintenance",
              "agent_id":"ag-5"|null,"agent_name":"..."|null,"status":"todo|in_progress|review|blocked|done",
              "work_request_id":"WR-1","created_at":"...","updated_at":"...",
@@ -29,7 +33,7 @@ Task       { "id":"TK-1","title":"...","description":"...","acceptance":"...","d
 Message    { "id":10,"sender":"owner|chief|ag-2","sender_name":"Owner","recipient":"chief|ag-2|owner","recipient_name":"...",
              "dept":"engine-maintenance"|null,"task_id":"TK-1"|null,"work_request_id":"WR-1"|null,
              "kind":"request|brief|assign|status|blocked|hire|instruction|question|review|board|report|refusal|chat|note","body":"...","ts":"..." }
-Event      { "id":55,"type":"work_request.created|work_request.updated|brief.created|task.created|task.updated|message.created|agent.created|agent.hired|agent.hire_refused|agent.retired|department.created|department.updated|department.retired|report.posted|activation.started|activation.done|activation.cancelled|output.saved","ts":"...","data":{...} }
+Event      { "id":55,"type":"work_request.created|work_request.updated|brief.created|task.created|task.updated|message.created|agent.created|agent.hired|agent.hire_refused|agent.retired|department.created|department.updated|department.retired|report.posted|activation.started|activation.done|activation.cancelled|output.saved|file.created","ts":"...","data":{...} }
 Activity   { "running":[{"activation_id":"act-1a2b3c4d","agent_id":"ag-2","agent_name":"Asha Verma","started_at":"..."}],
              "waiting":[{"agent_id":"chief","agent_name":"Dhruv Rebbapragada","messages":1}],
              "recent":[{"id":"act-...","agent_id":"chief","agent_name":"...","status":"done|cancelled","started_at":"...","ended_at":"...","report":"..."}] }
@@ -62,7 +66,7 @@ Add `?include_retired=true` to include retired departments.
 ### GET /api/work-requests/{id}
 ```json
 { "request": WorkRequest, "briefs": [Brief /* all versions, oldest first */], "brief": Brief /* latest */|null,
-  "tasks": [Task], "report": Message|null }
+  "tasks": [Task], "report": Message|null, "files": [File] }
 ```
 ### POST /api/work-requests
 Body `{ "text": "Inspect hydraulic leaks on fleet B, English or Hinglish" }` -> 201 `WorkRequest` (status Received) plus `hint`. The Chief subagent writes the brief and tasks when the work loop runs. (Offline mode without agents, used in tests: the keyword planner briefs immediately; `?wait=true` returns `{request, brief, tasks}`.)
@@ -71,6 +75,11 @@ Missing `text` -> 422; blank text -> 400.
 ### POST /api/instructions
 Body `{ "target": "chief" | "<dept id>", "text": "...", "work_request_id": "WR-1" /* optional, defaults to latest open request */ }` -> 201 `{ "message": Message, "brief": null, "blocked_tasks": [], "hint": "..." }`.
 Delivered as a message from `owner` (to a department: to its Vertical Head, with a copy to the Chief). The Chief re-plans when the work loop runs: new brief version, conflicting in-flight tasks become `blocked` with a note, new tasks added. Unknown dept -> 404; blank text -> 400; missing field -> 422.
+
+### GET /api/files?work_request_id=  ->  `[File]`
+PowerPoint, Word and Excel files the agents built (oldest first).
+### GET /api/files/{id}/download
+The file itself (`Content-Disposition: attachment`), for a File recorded above only. Token as header or `?token=`, so it works as a plain link. Unknown id or file gone from disk -> 404.
 
 ### GET /api/tasks?status=&dept=&work_request_id=  ->  `[Task]`
 ### GET /api/tasks/{id}  ->  `Task`
@@ -111,7 +120,7 @@ data: {"id":55,"type":"message.created","ts":"...","data":{...}}
 ```
 Send `Last-Event-ID` (or `?since_id=55`) to replay missed events. A `: keepalive` comment is sent every 15s. The server also polls the DB every 0.5s so every change is pushed within 3s. UI pattern: on any event refetch the affected resource (`task.*` -> /api/tasks, `message.created` -> /api/messages, `brief.created`/`work_request.*` -> /api/work-requests, `agent.*`/`department.*` -> /api/org).
 
-### GET /api/health  ->  `{ "ok": true, "version": "0.5.0" }`  (no token needed)
+### GET /api/health  ->  `{ "ok": true, "version": "0.6.0" }`  (no token needed)
 
 ### Other paths
 Anything outside `/api/` serves the dashboard UI (`backend/fsa/web`); unknown paths return `index.html` so the UI can route itself.

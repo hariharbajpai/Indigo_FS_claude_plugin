@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS briefs(
   id INTEGER PRIMARY KEY AUTOINCREMENT, work_request_id TEXT NOT NULL, version INTEGER NOT NULL,
   summary TEXT NOT NULL, goals TEXT NOT NULL, departments TEXT NOT NULL,
   needs_department INTEGER NOT NULL DEFAULT 0, question TEXT, change_note TEXT,
-  created_at TEXT NOT NULL, UNIQUE(work_request_id, version));
+  deliverables TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, UNIQUE(work_request_id, version));
 CREATE TABLE IF NOT EXISTS tasks(
   seq INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
   acceptance TEXT NOT NULL DEFAULT '', dept TEXT NOT NULL, agent_id TEXT,
@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS activations(
   work_request_id TEXT, first_message INTEGER, last_message INTEGER, watermark INTEGER NOT NULL DEFAULT 0,
   started_at TEXT NOT NULL, ended_at TEXT, report TEXT);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS files(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, work_request_id TEXT, task_id TEXT, format TEXT NOT NULL,
+  title TEXT NOT NULL, path TEXT NOT NULL UNIQUE, size INTEGER, created_by TEXT, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_msg_task ON messages(task_id);
 CREATE INDEX IF NOT EXISTS ix_msg_recipient ON messages(recipient);
 CREATE INDEX IF NOT EXISTS ix_task_wr ON tasks(work_request_id);
@@ -70,7 +73,14 @@ class Database:
         self.conn.execute("PRAGMA busy_timeout=15000")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self._depth = 0
+
+    def _migrate(self):
+        """Columns added after a table first shipped (databases made by older versions)."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(briefs)")}
+        if "deliverables" not in cols:
+            self.conn.execute("ALTER TABLE briefs ADD COLUMN deliverables TEXT NOT NULL DEFAULT '[]'")
 
     @contextmanager
     def tx(self):

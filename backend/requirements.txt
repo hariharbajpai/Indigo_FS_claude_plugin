@@ -1,3 +1,7 @@
 # The plugin itself needs only Python 3.9+ (standard library). These are for running the tests.
 pytest>=8
 pytest-cov>=5
+# Optional: independent readers that open the generated PowerPoint, Word and Excel files in tests/backend/test_office.py
+python-pptx>=1.0
+python-docx>=1.1
+openpyxl>=3.1

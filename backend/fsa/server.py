@@ -24,6 +24,18 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 RUN_HINT = "Sent. In Claude Code, run /flight-safety-agents:run so the team picks it up."
 
 
+OFFICE_TYPES = {"pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+
+
+class FileOut:
+    """A route result that is a file download, not JSON."""
+
+    def __init__(self, path, name, ctype):
+        self.path, self.name, self.ctype = path, name, ctype
+
+
 class HttpError(Exception):
     def __init__(self, status, detail):
         super().__init__(detail)
@@ -133,6 +145,8 @@ class App:
             R("POST", "/api/departments/(?P<did>[^/]+)/retire",
               lambda r: retire_department(self.store, self.kb, r.params["did"])),
             R("POST", "/api/agents/(?P<aid>[^/]+)/retire", lambda r: self.store.retire_agent(r.params["aid"])),
+            R("GET", "/api/files", lambda r: self.store.list_files(r.q("work_request_id"))),
+            R("GET", "/api/files/(?P<fid>[0-9]+)/download", self.download),
             R("GET", "/api/events", None, stream=True),
         ]
 
@@ -204,6 +218,13 @@ class App:
         _, files = r.form()
         return replace_documents(self.store, self.kb, r.params["did"], files)
 
+    def download(self, r):
+        """Only files the team built (recorded in the files table) can be downloaded."""
+        f = self.store.get_file(r.params["fid"])
+        if not os.path.isfile(f["path"]):
+            raise HttpError(404, f"The file is no longer on disk: {f['path']}")
+        return FileOut(f["path"], f["name"], OFFICE_TYPES.get(f["format"], "application/octet-stream"))
+
     # ---- dispatch ----
     def match(self, method, path):
         allowed = False
@@ -260,6 +281,8 @@ def make_handler(app):
                 if rt["stream"]:
                     return self._events(req)
                 out = rt["fn"](req)
+                if isinstance(out, FileOut):
+                    return self._file(out)
                 status, payload = out if isinstance(out, tuple) else (200, out)
                 self._send(status, payload)
             except HttpError as e:
@@ -281,6 +304,18 @@ def make_handler(app):
 
         def do_POST(self):
             self._handle("POST")
+
+        def _file(self, f):
+            with open(f.path, "rb") as fh:
+                data = fh.read()
+            safe = re.sub(r'[^A-Za-z0-9._-]+', "_", f.name)
+            self.send_response(200)
+            self.send_header("Content-Type", f.ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Disposition", f'attachment; filename="{safe}"')
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
 
         def _static(self, path):
             root = os.path.realpath(app.web_dir)

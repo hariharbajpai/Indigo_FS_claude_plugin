@@ -5,11 +5,14 @@ activation (all in parallel) and calls activation_done when each one finishes. T
 through the MCP tools, passing their activation id. An agent wakes when a message that needs it
 arrives (WAKE_KINDS); other messages for it are shown the next time it wakes.
 """
+import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from . import CHIEF_ID, HIRE_CAP, PLUGIN
+from . import CHIEF_ID, HIRE_CAP, PLUGIN, office
 from .store import Conflict, Invalid, NotFound, TASK_STATUSES
+from .workflow import FORMAT_NAMES
 
 WAKE_KINDS = {"request", "instruction", "assign", "chat", "question", "review", "blocked"}
 MAX_PARALLEL = 4
@@ -24,6 +27,17 @@ LOOP_INSTRUCTIONS = (
     "Use subagent_type = agent, description = description and prompt = prompt, copied exactly. When each "
     "finishes, call activation_done with its activation_id and the agent's final report, then call "
     "next_work again.")
+
+
+FORMAT_HINTS = (("pptx", r"\b(ppt|pptx|powerpoint|presentation|slides?|deck)\b"),
+                ("docx", r"\b(word|docx|doc file|document)\b"),
+                ("xlsx", r"\b(excel|xlsx|spreadsheet|sheet|workbook)\b"))
+
+
+def wanted_formats(text):
+    """Formats the Owner's words point at (a hint for the Chief, not a decision)."""
+    t = (text or "").lower()
+    return [f for f, rx in FORMAT_HINTS if re.search(rx, t)]
 
 
 def _ts(s):
@@ -202,17 +216,40 @@ class Office:
         return {"context": self.build_prompt(agent, aid, [], act["work_request_id"], briefing_only=True)}
 
     def tool_submit_brief(self, aid, work_request_id, summary, goals=None, tasks=None, change_note=None,
-                          block_task_ids=None, question=None):
+                          block_task_ids=None, question=None, deliverables=None):
         self.require(aid, ("chief",))
-        r = self.wf.submit_brief(work_request_id, summary, goals, tasks, change_note, block_task_ids, question)
+        r = self.wf.submit_brief(work_request_id, summary, goals, tasks, change_note, block_task_ids, question,
+                                 deliverables=deliverables)
         return {"brief_version": r["brief"]["version"],
                 "tasks_created": [{"id": t["id"], "title": t["title"], "dept": t["dept"]} for t in r["tasks"]],
-                "blocked": r["blocked"]}
+                "blocked": r["blocked"], "deliverables": r["brief"]["deliverables"]}
 
-    def tool_report(self, aid, work_request_id, text):
+    def tool_report(self, aid, work_request_id, text, missing_reason=None):
         self.require(aid, ("chief",))
-        m = self.wf.report_to_owner(work_request_id, text)
-        return {"ok": True, "message_id": m["id"]}
+        m = self.wf.report_to_owner(work_request_id, text, missing_reason=missing_reason)
+        return {"ok": True, "message_id": m["id"], "files": [f["path"] for f in self.store.list_files(work_request_id)]}
+
+    def tool_build_file(self, aid, task_id, format, title, content, sources=None):
+        """Build a PPT/Word/Excel file for a task (or, for the Chief, a work request) in _outputs/<WR>/."""
+        act, agent = self.require(aid)
+        fmt = str(format or "").lower().strip().lstrip(".")
+        fmt = {"ppt": "pptx", "doc": "docx", "word": "docx", "xls": "xlsx", "excel": "xlsx"}.get(fmt, fmt)
+        if fmt not in office.FORMATS:
+            raise Invalid("format must be pptx, docx or xlsx")
+        if task_id.startswith("WR-"):
+            if agent["kind"] != "chief":
+                raise Conflict("Only the Chief builds work-request level files; use one of your task ids")
+            wid, tid, prefix = self.store.get_work_request(task_id)["id"], None, ""
+        else:
+            t = self.store.get_task(task_id) if agent["kind"] == "chief" else self._task_for(agent, task_id)
+            wid, tid, prefix = t["work_request_id"], t["id"], f"{t['id']}-"
+        folder = os.path.join(self.kb.root, "_outputs", re.sub(r"[^A-Za-z0-9._-]+", "-", wid or "general"))
+        os.makedirs(folder, exist_ok=True)
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", str(title or "")).strip("-")[:70] or "file"
+        path = os.path.join(folder, f"{prefix}{slug}.{fmt}")
+        info = office.build(path, fmt, title, content, sources)
+        f = self.store.add_file(path, fmt, str(title).strip(), wid, tid, agent["id"], os.path.getsize(path))
+        return dict(info, path=path, format=fmt, file_id=f["id"], size_bytes=f["size"])
 
     def tool_send_message(self, aid, to, text, task_id=None, work_request_id=None):
         act, agent = self.require(aid)
@@ -328,6 +365,18 @@ class Office:
                 lines.append(f"  Last change: {b['change_note']}")
         else:
             lines.append("No brief yet.")
+            hint = wanted_formats(wr["text"])
+            if hint:
+                lines.append("The Owner's words suggest a file: " + ", ".join(f"{FORMAT_NAMES[f]} ({f})" for f in hint)
+                             + ". If so, list it in the brief's deliverables.")
+        if b and b["deliverables"]:
+            built = {f["format"]: f["path"] for f in self.store.list_files(wid)}
+            lines.append("Deliverables: " + "; ".join(
+                f"{FORMAT_NAMES[d['format']]} \"{d['title']}\" ({'built: ' + built[d['format']] if d['format'] in built else 'not built yet'})"
+                for d in b["deliverables"]))
+        files = self.store.list_files(wid)
+        if files:
+            lines.append("Files built: " + "; ".join(f"{f['title']} ({f['format']}): {f['path']}" for f in files))
         tasks = [t for t in self.store.list_tasks(work_request_id=wid) if not tasks_filter or tasks_filter(t)]
         if tasks:
             lines.append("Tasks:")
@@ -350,7 +399,8 @@ class Office:
                 "reads a whole section file. Work from what the manuals say, cite document, section and page, and "
                 "say so plainly when the manuals do not cover something. Never invent manual content.",
                 "save_output saves a report or other longer result as markdown and returns its path; put that path "
-                "in your task note."]
+                "in your task note. build_file makes a real PowerPoint (pptx), Word (docx) or Excel (xlsx) file "
+                "from structured content when the Owner wants one."]
         if kind == "chief":
             for d in self.store.list_departments():
                 docs = self._docs(d["id"])
@@ -388,6 +438,9 @@ class Office:
 ROLE_GUIDE = {
     "chief": [
         "You lead. You plan and coordinate; the departments do the work.",
+        "0. Files: when the Owner asks for a presentation/PPT, a Word document or an Excel sheet, put it in the "
+        "brief's deliverables (format pptx, docx or xlsx, and a title) and ask the departments for the content "
+        "(slide points, sections or table rows, with sources) in their tasks.",
         "1. A work request with no brief: check what each department's manuals cover (search_manuals), then call "
         "submit_brief with a "
         "short summary, goals and tasks. Each task has exactly one department (dept = department id), a clear title, "
@@ -397,8 +450,11 @@ ROLE_GUIDE = {
         "3. An Owner instruction: re-plan with submit_brief: a change_note, block_task_ids for tasks that conflict "
         "with it, and any new tasks. If it changes nothing, say so with send_message to the Owner.",
         "4. A blocked task or a question from a Head: answer with send_message, or re-plan.",
-        "5. A review message (all tasks done): read the task notes and their output files (read_section), then call "
-        "report_to_owner with the outcome of each task and the output paths. Keep it short and factual.",
+        "5. A review message (all tasks done): read the task notes and their output files (read_section). If the "
+        "brief has deliverables, build each one with build_file (task_id = the work request id) from the team's "
+        "content: a clear title slide subtitle, one idea per slide, at most 6 short bullets, tables for numbers, "
+        "and sources from the manuals. Then call report_to_owner with the outcome of each task; the file paths are "
+        "added to the report for you. Keep it short and factual.",
     ],
     "head": [
         "You run your department. For each new task:",
@@ -406,14 +462,19 @@ ROLE_GUIDE = {
         "2. Do it yourself from your department's manuals, or hire a specialist with hire_agent (name, role, reason, "
         f"task_id) when it needs a separate skill or parallel work. At most {HIRE_CAP} active agents per department, "
         "you included. A hire with task_id also assigns the task; the specialist then does it and reports.",
-        "3. When finished: save_output, then update_task to done with a note that sums up the result and gives the "
-        "output path. Blocked or unclear: update_task to blocked with the reason, or ask with send_message.",
+        "3. When finished: save_output (and build_file if the task asks for a PPT, Word or Excel file), then "
+        "update_task to done with a note that sums up the result and gives the paths. Blocked or unclear: "
+        "update_task to blocked with the reason, or ask with send_message.",
+        "When the Chief needs material for a presentation, document or sheet, write it so it drops straight in: "
+        "slide titles with short bullet points, section headings with paragraphs, or table columns and rows, each "
+        "with its manual source.",
         "Answer messages addressed to you. Don't redo work a specialist already marked done.",
     ],
     "hired": [
         "You are a specialist hired for specific tasks. For each task assigned to you:",
         "1. update_task to in_progress with a short note.",
-        "2. Do the work from your department's manuals (search_manuals, read_section) and save_output.",
+        "2. Do the work from your department's manuals (search_manuals, read_section) and save_output; use "
+        "build_file when the task asks for a PPT, Word or Excel file.",
         "3. update_task to done with a note that sums up the result and gives the output path, or to blocked with "
         "the reason. Ask your Vertical Head with send_message if something is unclear.",
     ],

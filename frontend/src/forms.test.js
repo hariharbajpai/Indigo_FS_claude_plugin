@@ -64,3 +64,16 @@ describe('v0.5 dashboard', () => {
     expect(adaptAgent({ id: 'ag-2', reason: 'needs analysis' }).hire_reason).toBe('needs analysis')
   })
 })
+
+import { fileUrl } from './api.js'
+describe('files', () => {
+  it('collects files from request details and builds download links', () => {
+    const s = buildState({ overview: { counts: { agents: 1, messages: 0, departments: 0 } }, org: { chief: { id: 'chief' }, departments: [] },
+      departments: [], requests: [{ id: 'WR-1', progress: { percent: 100 } }],
+      details: [{ request: { id: 'WR-1' }, briefs: [], report: null, files: [{ id: 3, work_request_id: 'WR-1', format: 'pptx', title: 'Deck', path: '/x/Deck.pptx', name: 'Deck.pptx' }] }],
+      tasks: [], messages: [] })
+    expect(s.files).toHaveLength(1)
+    expect(fileUrl(3)).toMatch(/^\/api\/files\/3\/download/)
+    expect(normalizeState({}).files).toEqual([])
+  })
+})

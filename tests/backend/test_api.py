@@ -211,6 +211,34 @@ class SecurityAndUiTests(unittest.TestCase):
         self.assertIn("\nid: ", r.text)
 
 
+class FileTests(unittest.TestCase):
+    def setUp(self):
+        self.app, self.c, self.tmp = start_server(self)
+        from backend.fsa import office
+        self.c.post("/api/work-requests", json={"text": "PPT banao"})
+        self.path = os.path.join(self.tmp, "kb", "_outputs", "WR-1", "Deck.pptx")
+        os.makedirs(os.path.dirname(self.path))
+        office.build(self.path, "pptx", "Deck", {"slides": [{"title": "One", "bullets": ["a"]}]})
+        self.f = self.app.store.add_file(self.path, "pptx", "Deck", "WR-1", None, "chief", os.path.getsize(self.path))
+
+    def test_list_detail_and_download(self):
+        files = self.c.get("/api/files?work_request_id=WR-1").json()
+        self.assertEqual([(f["name"], f["format"], f["created_by_name"]) for f in files],
+                         [("Deck.pptx", "pptx", "Dhruv Rebbapragada")])
+        self.assertEqual(self.c.get("/api/work-requests/WR-1").json()["files"][0]["path"], self.path)
+        r = self.c.get(f"/api/files/{self.f['id']}/download")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("presentationml", r.headers["Content-Type"])
+        self.assertIn('filename="Deck.pptx"', r.headers["Content-Disposition"])
+        self.assertTrue(r.content.startswith(b"PK"))
+        self.assertEqual(self.c.get(f"/api/files/{self.f['id']}/download", token=False).status_code, 401)
+        self.assertEqual(self.c.get(f"/api/files/{self.f['id']}/download?token=test-token", token=False).status_code, 200)
+        self.assertEqual(self.c.get("/api/files/999/download").status_code, 404)
+        self.assertEqual(self.c.get("/api/files/abc/download").status_code, 404)
+        os.remove(self.path)
+        self.assertEqual(self.c.get(f"/api/files/{self.f['id']}/download").status_code, 404)
+
+
 @unittest.skipUnless(HAS_PDFTOTEXT, "kb.py needs pdftotext (or pypdf/PyMuPDF)")
 class BoardTests(ApiBase):
     def test_parse_board_lines(self):

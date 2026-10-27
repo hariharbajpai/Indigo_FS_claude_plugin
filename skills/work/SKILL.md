@@ -1,8 +1,8 @@
 ---
 name: work
-description: Give the Chief of Flight Safety (Dhruv Rebbapragada) work: he writes the brief, assigns tasks to departments, Vertical Heads do them or hire agents, and the Chief reports back. Use when the Owner wants Flight Safety Command to do something.
+description: Give the Chief of Flight Safety (Dhruv Rebbapragada) work: he writes the brief, assigns tasks to departments, Vertical Heads do them or hire agents, and the Chief reports back, with a PowerPoint, Word or Excel file when asked. Use when the Owner wants Flight Safety Command to do something, including making a presentation, document or spreadsheet from the department manuals.
 argument-hint: <what to do, English or Hinglish>
-allowed-tools: Agent, mcp__plugin_flight-safety-agents_fsc__status, mcp__plugin_flight-safety-agents_fsc__open_dashboard, mcp__plugin_flight-safety-agents_fsc__stop_dashboard, mcp__plugin_flight-safety-agents_fsc__add_department, mcp__plugin_flight-safety-agents_fsc__update_department_docs, mcp__plugin_flight-safety-agents_fsc__submit_work, mcp__plugin_flight-safety-agents_fsc__owner_instruction, mcp__plugin_flight-safety-agents_fsc__next_work, mcp__plugin_flight-safety-agents_fsc__activation_done, mcp__plugin_flight-safety-agents_fsc__get_briefing, mcp__plugin_flight-safety-agents_fsc__send_message, mcp__plugin_flight-safety-agents_fsc__submit_brief, mcp__plugin_flight-safety-agents_fsc__report_to_owner, mcp__plugin_flight-safety-agents_fsc__update_task, mcp__plugin_flight-safety-agents_fsc__hire_agent, mcp__plugin_flight-safety-agents_fsc__assign_task, mcp__plugin_flight-safety-agents_fsc__search_manuals, mcp__plugin_flight-safety-agents_fsc__read_section, mcp__plugin_flight-safety-agents_fsc__save_output
+allowed-tools: Agent, mcp__plugin_flight-safety-agents_fsc__status, mcp__plugin_flight-safety-agents_fsc__open_dashboard, mcp__plugin_flight-safety-agents_fsc__stop_dashboard, mcp__plugin_flight-safety-agents_fsc__add_department, mcp__plugin_flight-safety-agents_fsc__update_department_docs, mcp__plugin_flight-safety-agents_fsc__submit_work, mcp__plugin_flight-safety-agents_fsc__owner_instruction, mcp__plugin_flight-safety-agents_fsc__next_work, mcp__plugin_flight-safety-agents_fsc__activation_done, mcp__plugin_flight-safety-agents_fsc__get_briefing, mcp__plugin_flight-safety-agents_fsc__send_message, mcp__plugin_flight-safety-agents_fsc__submit_brief, mcp__plugin_flight-safety-agents_fsc__report_to_owner, mcp__plugin_flight-safety-agents_fsc__update_task, mcp__plugin_flight-safety-agents_fsc__hire_agent, mcp__plugin_flight-safety-agents_fsc__assign_task, mcp__plugin_flight-safety-agents_fsc__search_manuals, mcp__plugin_flight-safety-agents_fsc__read_section, mcp__plugin_flight-safety-agents_fsc__save_output, mcp__plugin_flight-safety-agents_fsc__build_file
 ---
 
 # Give the Chief work
@@ -32,8 +32,9 @@ specialists are plugin subagents; you run them when the work loop asks and you n
    with `reset_running: true` once.
 5. Stop when the status is `finished` or `no_run`. Then tell the Owner, in a few short lines, what the Chief
    reported (`ownerMessages`) and whether the team is waiting for them (`waitingFor`). If the Chief asked a question,
-   say they can answer with `/flight-safety-agents:tell <answer>`. Give the dashboard link if there is one.
+   say they can answer with `/flight-safety-agents:tell <answer>`. List the full path of every file the team built
+   (PPT, Word, Excel: they are in the Chief's report) and give the dashboard link if there is one.
 
 The agent tools (get_briefing, send_message, submit_brief, report_to_owner, update_task, hire_agent, assign_task,
-search_manuals, read_section, save_output) belong to the subagents and need their activation id. Don't call them
+search_manuals, read_section, save_output, build_file) belong to the subagents and need their activation id. Don't call them
 yourself.

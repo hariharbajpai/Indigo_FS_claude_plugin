@@ -12,6 +12,7 @@ from .planner import default_planner
 from .store import Conflict, Invalid, Store
 
 MESSAGE_CAP = 30
+FORMAT_NAMES = {"pptx": "PPT", "docx": "Word", "xlsx": "Excel"}
 
 
 class Workflow:
@@ -85,10 +86,12 @@ class Workflow:
 
     # ---------- agent mode: the Chief's own brief ----------
     def submit_brief(self, wid, summary, goals=None, tasks=None, change_note=None, block_task_ids=None,
-                     question=None, author=CHIEF_ID):
+                     question=None, author=CHIEF_ID, deliverables=None):
         """The Chief publishes a brief (v1) or a re-plan (v2+). tasks: [{title, description, acceptance, dept}].
+        deliverables: [{format: pptx|docx|xlsx, title}] the Owner asked for (kept from the last brief if omitted).
         No tasks and a question = no department fits; the Owner is asked. Returns {brief, tasks, blocked}."""
         wr = self.store.get_work_request(wid)
+        deliverables = self._deliverables(deliverables, wid)
         summary = (summary or "").strip()
         if not summary:
             raise Invalid("A brief needs a summary")
@@ -125,7 +128,7 @@ class Workflow:
                 used.append(dept)
         brief = self.store.add_brief(wid, summary, goals, used,
                                      needs_department=not used and bool(question),
-                                     question=question, change_note=change_note)
+                                     question=question, change_note=change_note, deliverables=deliverables)
         created = []
         for title, dept, desc, acc in cleaned:
             t = self.store.create_task(title, dept, desc, acc, wid)
@@ -141,6 +144,9 @@ class Workflow:
                                                for t in created))
         if blocked:
             lines.append("Blocked: " + ", ".join(blocked))
+        if deliverables:
+            lines.append("Deliverables: " + "; ".join(f"{FORMAT_NAMES[d['format']]} \"{d['title']}\""
+                                                      for d in deliverables))
         self.store.add_message(author, "owner", "\n".join(lines), kind="brief", work_request_id=wid)
         if question:
             self.store.add_message(author, "owner", question, kind="question", work_request_id=wid)
@@ -151,11 +157,41 @@ class Workflow:
         self._refresh_request(wid)
         return {"brief": brief, "tasks": created, "blocked": blocked}
 
-    def report_to_owner(self, wid, text, author=CHIEF_ID):
+    def _deliverables(self, items, wid):
+        if items is None:
+            prev = self.store.get_brief(wid)
+            return prev["deliverables"] if prev else []
+        out = []
+        for i, d in enumerate(items or [], 1):
+            fmt = str((d or {}).get("format", "")).lower().strip().lstrip(".")
+            fmt = {"ppt": "pptx", "doc": "docx", "word": "docx", "xls": "xlsx", "excel": "xlsx"}.get(fmt, fmt)
+            if fmt not in FORMAT_NAMES:
+                raise Invalid(f"Deliverable {i}: format must be pptx, docx or xlsx")
+            out.append({"format": fmt, "title": str(d.get("title") or "").strip() or f"{FORMAT_NAMES[fmt]} for {wid}"})
+        return out
+
+    def missing_deliverables(self, wid):
+        b = self.store.get_brief(wid)
+        built = {f["format"] for f in self.store.list_files(wid)}
+        return [d for d in (b["deliverables"] if b else []) if d["format"] not in built]
+
+    def report_to_owner(self, wid, text, author=CHIEF_ID, missing_reason=None):
         self.store.get_work_request(wid)
         if not text or not text.strip():
             raise Invalid("The report needs text")
-        m = self.store.add_message(author, "owner", text.strip(), kind="report", work_request_id=wid)
+        missing = self.missing_deliverables(wid)
+        if missing and not (missing_reason or "").strip():
+            raise Invalid("The Owner asked for " + ", ".join(f"{FORMAT_NAMES[d['format']]} \"{d['title']}\""
+                                                              for d in missing)
+                          + ". Build it with build_file first, or pass missing_reason if it cannot be made.")
+        body = text.strip()
+        files = self.store.list_files(wid)
+        if files:
+            body += "\n\nFiles:\n" + "\n".join(f"- {f['title']} ({FORMAT_NAMES.get(f['format'], f['format'])}): "
+                                               f"{f['path']}" for f in files)
+        if missing:
+            body += f"\n\nNot delivered: {missing_reason.strip()}"
+        m = self.store.add_message(author, "owner", body, kind="report", work_request_id=wid)
         self.store.add_event("report.posted", {"work_request_id": wid})
         return m
 
@@ -164,7 +200,7 @@ class Workflow:
         reports = self.store.list_messages(work_request_id=wid, kind="report")
         return {"request": wr, "briefs": self.store.list_briefs(wid), "brief": self.store.get_brief(wid),
                 "tasks": self.store.list_tasks(work_request_id=wid),
-                "report": reports[-1] if reports else None}
+                "report": reports[-1] if reports else None, "files": self.store.list_files(wid)}
 
     # ---------- US5 ----------
     def update_task(self, tid, status, note, author=None):
@@ -187,10 +223,14 @@ class Workflow:
             if self.store.get_work_request(wid)["status"] != "Done":
                 self.store.set_wr_status(wid, "Done")
                 if self.agent_mode:  # the Chief writes the report himself
+                    todo = self.missing_deliverables(wid)
+                    extra = (" The Owner asked for " + "; ".join(f"{FORMAT_NAMES[d['format']]} \"{d['title']}\""
+                                                                 for d in todo)
+                             + ": build it with build_file from the team's outputs first.") if todo else ""
                     self.store.add_message(
                         SYSTEM_ID, CHIEF_ID,
                         f"All tasks of {wid} are done ({len(tasks)}). Read the task notes and outputs, "
-                        "then send the Owner a completion report with report_to_owner.",
+                        f"then send the Owner a completion report with report_to_owner.{extra}",
                         kind="review", work_request_id=wid)
                 else:
                     self._report(wid, tasks)

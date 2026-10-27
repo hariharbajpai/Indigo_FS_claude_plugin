@@ -55,7 +55,7 @@ class PluginTests(unittest.TestCase):
                 else:
                     self.assertIn(t, BUILTIN, f"{agent}: {t}")
             mine = {t[len(PREFIX):] for t in tools if t.startswith(PREFIX)}
-            self.assertTrue({"get_briefing", "send_message", "search_manuals", "save_output"} <= mine, agent)
+            self.assertTrue({"get_briefing", "send_message", "search_manuals", "save_output", "build_file"} <= mine, agent)
             self.assertNotIn("next_work", mine)  # agents never run the loop
         self.assertIn("submit_brief", frontmatter(os.path.join(REPO, "agents", "chief-of-flight-safety.md"))[0]["tools"])
         self.assertIn("hire_agent", frontmatter(os.path.join(REPO, "agents", "vertical-head.md"))[0]["tools"])
@@ -83,6 +83,7 @@ class PluginTests(unittest.TestCase):
             body = open(os.path.join(REPO, "skills", cmd, "SKILL.md")).read()
             self.assertIn("activation_done", body)
             self.assertIn("reset_running", body)
+            self.assertIn(PREFIX + "build_file", body)  # subagents run under these commands' tool grants
 
     def test_ui_is_bundled(self):
         web = os.path.join(REPO, "backend", "fsa", "web")

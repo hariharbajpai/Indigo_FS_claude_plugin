@@ -317,14 +317,14 @@ class Store:
             c.execute("UPDATE work_requests SET turns=turns+? WHERE seq=?", (n, self._seq(wid, "WR")))
 
     def add_brief(self, wid, summary, goals, departments, needs_department=False,
-                  question=None, change_note=None):
+                  question=None, change_note=None, deliverables=None):
         self.get_work_request(wid)
         with self.db.tx() as c:
             v = (self.db.one("SELECT MAX(version) v FROM briefs WHERE work_request_id=?", (wid,))["v"] or 0) + 1
             c.execute("INSERT INTO briefs(work_request_id,version,summary,goals,departments,needs_department,"
-                      "question,change_note,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                      "question,change_note,deliverables,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                       (wid, v, summary, json.dumps(goals), json.dumps(departments),
-                       int(needs_department), question, change_note, now()))
+                       int(needs_department), question, change_note, json.dumps(deliverables or []), now()))
             self.add_event("brief.created", {"work_request_id": wid, "version": v})
         return self.get_brief(wid, v)
 
@@ -333,7 +333,8 @@ class Store:
         return {"work_request_id": r["work_request_id"], "version": r["version"], "summary": r["summary"],
                 "goals": json.loads(r["goals"]), "departments": json.loads(r["departments"]),
                 "needs_department": bool(r["needs_department"]), "question": r["question"],
-                "change_note": r["change_note"], "created_at": r["created_at"]}
+                "change_note": r["change_note"], "deliverables": json.loads(r.get("deliverables") or "[]"),
+                "created_at": r["created_at"]}
 
     def get_brief(self, wid, version=None):
         if version is None:
@@ -425,6 +426,35 @@ class Store:
                 self.add_message(head, agent_id, f"Assigned {tid}: {t['title']}", kind="assign",
                                  task_id=tid, dept=t["dept"], work_request_id=t["work_request_id"])
         return self.get_task(tid)
+
+    # ---------- files (PPT / Word / Excel the agents built) ----------
+    def add_file(self, path, fmt, title, work_request_id=None, task_id=None, created_by=None, size=None):
+        with self.db.tx() as c:
+            c.execute("INSERT INTO files(work_request_id,task_id,format,title,path,size,created_by,created_at)"
+                      " VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET title=excluded.title,"
+                      " size=excluded.size, created_by=excluded.created_by, created_at=excluded.created_at",
+                      (work_request_id, task_id, fmt, title, path, size, created_by, now()))
+            f = self.db.one("SELECT * FROM files WHERE path=?", (path,))
+            self.add_event("file.created", {"id": f["id"], "work_request_id": work_request_id, "format": fmt})
+        return self._file(f)
+
+    def _file(self, f):
+        f["name"] = f["path"].replace("\\", "/").rsplit("/", 1)[-1]
+        f["created_by_name"] = self._name(f["created_by"]) if f["created_by"] else None
+        return f
+
+    def get_file(self, fid):
+        f = self.db.one("SELECT * FROM files WHERE id=?", (int(fid),))
+        if not f:
+            raise NotFound(f"Unknown file {fid}")
+        return self._file(f)
+
+    def list_files(self, work_request_id=None):
+        sql, args = "SELECT * FROM files", []
+        if work_request_id:
+            sql += " WHERE work_request_id=?"
+            args.append(work_request_id)
+        return [self._file(f) for f in self.db.q(sql + " ORDER BY id", args)]
 
     # ---------- meta (cursors) ----------
     def get_meta(self, key, default=None):

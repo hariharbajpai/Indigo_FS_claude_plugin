@@ -18,6 +18,7 @@ function loadToken() {
 const TOKEN = loadToken()
 
 export const eventsUrl = () => '/api/events' + (TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : '')
+export const fileUrl = (id) => `/api/files/${encodeURIComponent(id)}/download` + (TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : '')
 
 async function request(path, opts = {}) {
   const headers = { ...(opts.headers || {}) }
@@ -47,13 +48,13 @@ const NO_ACTIVITY = { running: [], waiting: [], recent: [] }
 
 const EMPTY = {
   chief: null, departments: [], agents: [], work_requests: [],
-  briefs: [], tasks: [], messages: [], stats: null, activity: NO_ACTIVITY,
+  briefs: [], tasks: [], messages: [], files: [], stats: null, activity: NO_ACTIVITY,
 }
 
 // Fill missing collections so views never crash on a partial payload.
 export function normalizeState(s) {
   const out = { ...EMPTY, ...(s || {}) }
-  for (const k of ['departments', 'agents', 'work_requests', 'briefs', 'tasks', 'messages']) {
+  for (const k of ['departments', 'agents', 'work_requests', 'briefs', 'tasks', 'messages', 'files']) {
     if (!Array.isArray(out[k])) out[k] = []
   }
   const a = out.activity || {}
@@ -98,6 +99,7 @@ export function buildState({ overview, org, departments, requests, details, task
     agents: [...agents.values()],
     work_requests: requests.map((w) => adaptRequest(w, reports[w.id])),
     briefs: details.flatMap((d) => d.briefs || []),
+    files: details.flatMap((d) => d.files || []),
     tasks: taskList,
     messages: messages.map(adaptMessage),
     stats: { agents: overview.counts.agents, messages: overview.counts.messages, departments: overview.counts.departments },

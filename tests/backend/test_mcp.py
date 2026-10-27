@@ -64,7 +64,7 @@ class ProtocolTests(unittest.TestCase):
         self.m.send({"jsonrpc": "2.0", "method": "notifications/initialized"})  # no reply expected
         self.assertEqual(self.m.rpc("ping")["result"], {})
         tools = self.m.rpc("tools/list")["result"]["tools"]
-        self.assertEqual(len(tools), 19)
+        self.assertEqual(len(tools), 20)
         for t in tools:
             self.assertLessEqual(len(PREFIX + t["name"]), 64, t["name"])  # Claude's tool-name limit
             self.assertEqual(t["inputSchema"]["type"], "object")
@@ -139,13 +139,23 @@ class FullFlowTests(unittest.TestCase):
         m.ok("activation_done", activation_id=s["activation_id"], report="Done")
         [c2] = m.ok("next_work")["activations"]
         self.assertIn("are done", c2["prompt"])
+        deck = m.ok("build_file", activation=c2["activation_id"], task_id=wr["id"], format="pptx",
+                    title="Hazard ID review", content={"subtitle": "Engine Maintenance", "slides": [
+                        {"title": "Result", "bullets": ["No gaps (engine manual §3, p.4)"]}]},
+                    sources=["engine manual §3, p.4"])
+        self.assertTrue(os.path.isfile(deck["path"]))
+        err, text = m.call("build_file", activation=c2["activation_id"], task_id=wr["id"], format="pptx",
+                           title="Bad", content={"slides": []})
+        self.assertTrue(err)
+        self.assertIn("slides", text)
         m.ok("report_to_owner", activation=c2["activation_id"], work_request_id=wr["id"], text="No gaps found.")
         m.ok("activation_done", activation_id=c2["activation_id"], report="Reported")
         fin = m.ok("next_work")
         self.assertEqual(fin["status"], "finished")
-        self.assertTrue(any("No gaps found." in x for x in fin["ownerMessages"]))
+        self.assertTrue(any("No gaps found." in x and deck["path"] in x for x in fin["ownerMessages"]))
         st = m.ok("status")
         self.assertEqual(st["work_requests"][0]["status"], "Done")
+        self.assertEqual(st["work_requests"][0]["files"], [deck["path"]])
         self.assertEqual(st["departments"][0]["hired"], ["Ravi (Hazard analyst)"])
         ins = m.ok("owner_instruction", text="Ab cabin safety bhi dekho", target="chief")
         self.assertEqual(ins["delivered_to"], "Dhruv Rebbapragada")
