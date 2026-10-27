@@ -12,7 +12,7 @@ import traceback
 from . import VERSION, daemon, paths
 from .kb_bridge import KbBridge
 from .loop import Office
-from .services import add_department, read_paths, replace_documents
+from .services import add_department, read_paths, rename, replace_documents
 from .store import Store, StoreError
 from .workflow import Workflow
 
@@ -20,8 +20,8 @@ PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 INSTRUCTIONS = (
     "Flight Safety Command runs a flight-safety organisation as subagents in this Claude Code session: the Chief "
-    "of Flight Safety (Dhruv Rebbapragada), one Vertical Head per department and the specialists they hire. "
-    "The Owner works through /flight-safety-agents:start, add-dept, work, tell, run and status. When a command "
+    "of Flight Safety, one Vertical Head per department and the specialists they hire (the Owner can rename any "
+    "of them). The Owner works through /flight-safety-agents:start, add-dept, work, tell, run, rename and status. When a command "
     "runs the work loop, call next_work, start one Agent per activation exactly as given, and call "
     "activation_done with each agent's final report. The agent tools (get_briefing, send_message, submit_brief, "
     "report_to_owner, update_task, hire_agent, assign_task, search_manuals, read_section, save_output, build_file) "
@@ -64,6 +64,10 @@ TOOLS = [
     ("update_department_docs", "Owner: update a department's manuals with new PDFs (new versions replace "
                                     "the old revision; identical files are skipped; others are added).",
      obj({"department": S, "files": {"type": "array", "items": S}}, ["department", "files"])),
+    ("rename", "Owner: rename anyone: the Chief of Flight Safety, a Vertical Head, a hired specialist, or a "
+               "department. target = current name, a unique part of it, an agent id (ag-2), 'chief', or a "
+               "department id. Display name only; ids, tasks and history stay.",
+     obj({"target": S, "new_name": S}, ["target", "new_name"])),
     ("submit_work", "Owner: give the Chief of Flight Safety a work request (English or Hinglish).",
      obj({"text": S}, ["text"])),
     ("owner_instruction", "Owner: send an instruction mid-way, to the Chief (target 'chief') or a department "
@@ -153,10 +157,12 @@ class Company:
                               "with /flight-safety-agents:work.")
             return out
         o, s = self.office, self.office.store
-        out["chief"] = "Dhruv Rebbapragada, Chief of Flight Safety"
+        chief = s.get_agent("chief")
+        out["chief"] = f"{chief['name']}, {chief['role']} (id chief)"
         out["departments"] = [{"id": r["department"]["id"], "name": r["department"]["name"],
-                               "vertical_head": r["head"]["name"], "documents": len(self.kb.list_docs(r["department"]["id"])),
-                               "hired": [f"{a['name']} ({a['role']})" for a in r["agents"]],
+                               "vertical_head": f"{r['head']['name']} ({r['head']['id']})",
+                               "documents": len(self.kb.list_docs(r["department"]["id"])),
+                               "hired": [f"{a['name']} ({a['role']}, {a['id']})" for a in r["agents"]],
                                "active_agents": r["active_count"]} for r in s.org_chart()["departments"]]
         out["work_requests"] = [{"id": w["id"], "status": w["status"], "text": w["text"][:200],
                                  "brief_version": w["brief_version"], "progress": w["progress"],
@@ -182,6 +188,11 @@ class Company:
 
     def update_department_docs(self, department, files):
         return replace_documents(self.office.store, self.kb, department, read_paths(files))[1]
+
+    def rename(self, target, new_name):
+        r = rename(self.office.store, target, new_name)
+        return dict(r, message=f"Renamed {r['old']} to {r['new']}. The dashboard, chat feed and agents use the "
+                               "new name from now on.")
 
     def submit_work(self, text):
         wr = self.office.wf.submit_work_request(text)

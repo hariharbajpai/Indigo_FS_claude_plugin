@@ -332,7 +332,8 @@ class Office:
         return self.kb.list_docs(dept)
 
     def _team_lines(self):
-        lines = [f"- Dhruv Rebbapragada, Chief of Flight Safety: id \"{CHIEF_ID}\", reports to the Owner"]
+        chief = self.store.get_agent(CHIEF_ID)
+        lines = [f"- {chief['name']}, {chief['role']}: id \"{CHIEF_ID}\", reports to the Owner"]
         for row in self.store.org_chart()["departments"]:
             d, h = row["department"], row["head"]
             lines.append(f"- {h['name']}, Vertical Head of {d['name']}: id \"{h['id']}\", department id "

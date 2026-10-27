@@ -143,4 +143,6 @@ export const api = {
     return request(`/departments/${encodeURIComponent(id)}/replace`, { method: 'POST', body: fd })
   },
   retireDepartment: (id) => request(`/departments/${encodeURIComponent(id)}/retire`, { method: 'POST' }),
+  renameAgent: (id, name) => request(`/agents/${encodeURIComponent(id)}/rename`, json('POST', { name })),
+  renameDepartment: (id, name) => request(`/departments/${encodeURIComponent(id)}/rename`, json('POST', { name })),
 }

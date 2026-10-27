@@ -174,7 +174,7 @@ Manuals, FDM data and reports are confidential. `.gitignore` excludes `safety-kb
 - **Memory is only as good as what gets recorded.** Agents are told to record sparingly and with sources; review it now and then.
 - The department skills are frameworks. They do not contain your regulations or procedures, only how to work with them. Quality depends on the documents you ingest.
 
-## Flight Safety Command (v0.6.0): a Chief, Vertical Heads and a live dashboard, inside Claude Code
+## Flight Safety Command (v0.7.0): a Chief, Vertical Heads and a live dashboard, inside Claude Code
 
 Flight Safety Command runs a small flight-safety organisation as **subagents in your Claude Code session** (desktop app, IDE or terminal), on your own login. No API key, no terminal, nothing to install beyond the plugin.
 
@@ -196,6 +196,7 @@ Owner (you) ──work / instructions──▶ Dhruv Rebbapragada, Chief of Flig
 | `/flight-safety-agents:work <request>` | Gives the Chief work (English or Hinglish), including "make a PPT / Word report / Excel sheet". The team runs until it is done or needs you. |
 | `/flight-safety-agents:tell [@dept-id] <instruction>` | Steers mid-way (to the Chief, or one department) or answers the Chief's question. The Chief re-plans: new brief version, conflicting tasks blocked, new tasks added. |
 | `/flight-safety-agents:run` | Runs waiting work, for example after you sent work or an instruction from the dashboard. |
+| `/flight-safety-agents:rename Dhruv Rebbapragada -> Arjun Mehta` | Renames anyone: the Chief, a Vertical Head, a hired specialist, or a department (by current name, a unique part of it, an id like `ag-2`, or `chief`). Also from the dashboard's Org Chart (Rename buttons). |
 | `/flight-safety-agents:status`, `/flight-safety-agents:stop` | Status in chat; stop the dashboard server. |
 
 ### How a request flows
@@ -216,8 +217,11 @@ Ask for a file in plain words ("Safety Review Board ke liye PPT bana do", "findi
 
 Files are written with the Python standard library (Office Open XML), so nothing extra is installed. They open in PowerPoint, Word, Excel, Keynote, Pages, Numbers, Google and LibreOffice.
 
+### Renaming
+The Chief starts as **Dhruv Rebbapragada**, and every name is the Owner's to change: the Chief, any Vertical Head, any hired specialist, and department display names. Use `/flight-safety-agents:rename <who> -> <new name>` or the Rename buttons in the Org Chart. Only the name changes: ids, tasks, history and the department's knowledge-base folder stay. The renamed agent gets a note, the Chat Feed logs it, and every prompt, report and dashboard view uses the new name from then on. Two active agents (or departments) cannot share a name.
+
 ### Dashboard
-Overview (work requests, briefs, progress, **files built with Download links**, **who is working now**, recent agent runs), Task Board (kanban with each task's note history), Org Chart (Chief → Heads → hired specialists, with hire reasons; agents at work are highlighted), Chat Feed (every message between you and the agents, filterable by department, agent and task) and Owner Console (new work, instructions, add/update/retire departments). Updates are live. Work or instructions sent from the dashboard are picked up when you run `/flight-safety-agents:run` in Claude Code; the dashboard reminds you.
+Overview (work requests, briefs, progress, **files built with Download links**, **who is working now**, recent agent runs), Task Board (kanban with each task's note history), Org Chart (Chief → Heads → hired specialists, with hire reasons and Rename buttons; agents at work are highlighted), Chat Feed (every message between you and the agents, filterable by department, agent and task) and Owner Console (new work, instructions, add/update/retire departments). Updates are live. Work or instructions sent from the dashboard are picked up when you run `/flight-safety-agents:run` in Claude Code; the dashboard reminds you.
 
 The dashboard server binds to 127.0.0.1 only, accepts only local Host headers and needs the token from the `/start` link for every API call.
 

@@ -211,6 +211,28 @@ class SecurityAndUiTests(unittest.TestCase):
         self.assertIn("\nid: ", r.text)
 
 
+class RenameApiTests(unittest.TestCase):
+    def setUp(self):
+        self.app, self.c, self.tmp = start_server(self)
+        self.dept, self.head = self.app.store.create_department("Ops", "Om")
+
+    def test_rename_agent_and_department(self):
+        r = self.c.post("/api/agents/chief/rename", json={"name": "Arjun Mehta"})
+        self.assertEqual((r.status_code, r.json()["name"]), (200, "Arjun Mehta"))
+        self.assertEqual(self.c.get("/api/org").json()["chief"]["name"], "Arjun Mehta")
+        r = self.c.post("/api/departments/ops/rename", json={"name": "Flight Operations"})
+        self.assertEqual(r.json()["name"], "Flight Operations")
+        self.assertEqual(self.c.get("/api/org").json()["departments"][0]["head"]["role"], "Vertical Head, Flight Operations")
+        self.assertEqual(self.c.post(f"/api/agents/{self.head['id']}/rename", json={"name": "arjun mehta"}).status_code, 409)
+        self.assertEqual(self.c.post("/api/agents/chief/rename", json={"name": " "}).status_code, 400)
+        self.assertEqual(self.c.post("/api/agents/chief/rename", json={}).status_code, 422)
+        self.assertEqual(self.c.post("/api/agents/ag-99/rename", json={"name": "x"}).status_code, 404)
+        self.assertEqual(self.c.post("/api/agents/chief/rename", json={"name": "x"}, token=False).status_code, 401)
+        ev = self.c.get("/api/events?since_id=0&max_seconds=0").text
+        self.assertIn("event: agent.renamed", ev)
+        self.assertIn("event: department.renamed", ev)
+
+
 class FileTests(unittest.TestCase):
     def setUp(self):
         self.app, self.c, self.tmp = start_server(self)

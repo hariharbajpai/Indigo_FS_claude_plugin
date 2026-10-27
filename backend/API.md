@@ -1,4 +1,4 @@
-# Flight Safety Command API (v0.6.0)
+# Flight Safety Command API (v0.7.0)
 
 Served by `backend/fsa/server.py` (Python standard library) together with the dashboard UI. `/flight-safety-agents:start` starts it on `http://127.0.0.1:4810` (or the next free port) and gives the Owner a link with `?token=...`.
 JSON everywhere except `POST /api/departments` (multipart) and `GET /api/events` (SSE). One local Owner.
@@ -33,7 +33,7 @@ Task       { "id":"TK-1","title":"...","description":"...","acceptance":"...","d
 Message    { "id":10,"sender":"owner|chief|ag-2","sender_name":"Owner","recipient":"chief|ag-2|owner","recipient_name":"...",
              "dept":"engine-maintenance"|null,"task_id":"TK-1"|null,"work_request_id":"WR-1"|null,
              "kind":"request|brief|assign|status|blocked|hire|instruction|question|review|board|report|refusal|chat|note","body":"...","ts":"..." }
-Event      { "id":55,"type":"work_request.created|work_request.updated|brief.created|task.created|task.updated|message.created|agent.created|agent.hired|agent.hire_refused|agent.retired|department.created|department.updated|department.retired|report.posted|activation.started|activation.done|activation.cancelled|output.saved|file.created","ts":"...","data":{...} }
+Event      { "id":55,"type":"work_request.created|work_request.updated|brief.created|task.created|task.updated|message.created|agent.created|agent.hired|agent.hire_refused|agent.retired|department.created|department.updated|department.retired|report.posted|activation.started|activation.done|activation.cancelled|output.saved|file.created|agent.renamed|department.renamed","ts":"...","data":{...} }
 Activity   { "running":[{"activation_id":"act-1a2b3c4d","agent_id":"ag-2","agent_name":"Asha Verma","started_at":"..."}],
              "waiting":[{"agent_id":"chief","agent_name":"Dhruv Rebbapragada","messages":1}],
              "recent":[{"id":"act-...","agent_id":"chief","agent_name":"...","status":"done|cancelled","started_at":"...","ended_at":"...","report":"..."}] }
@@ -109,6 +109,10 @@ or, nothing is written and the Owner must decide:
 ### POST /api/departments/{id}/replace  (multipart: `files`) -> `{ "status":"replaced","department":Department }`
 ### POST /api/departments/{id}/retire  -> `{ "department": Department, "retired_agents": ["ag-2","ag-5"] }`. Retires head and hired agents. Open tasks of the dept become `blocked` with a note.
 Chief cannot be retired: `POST /api/agents/chief/retire` -> 409.
+### POST /api/agents/{id}/rename
+Body `{ "name": "Arjun Mehta" }` -> `Agent`. Any active agent, the Chief included (`/api/agents/chief/rename`). Display name only. Blank, reserved (Owner, system) or over 80 characters -> 400; another active agent already has that name (case-insensitive) or the agent is retired -> 409. The agent gets a `note` message and an `agent.renamed` event is sent.
+### POST /api/departments/{id}/rename
+Body `{ "name": "Flight Operations" }` -> `Department`. Display name only: the id and knowledge-base folder stay; the Vertical Head's role text follows. Same errors as above; `department.renamed` event.
 
 ### GET /api/events  (Server-Sent Events)
 `Content-Type: text/event-stream`. Each frame:
@@ -120,7 +124,7 @@ data: {"id":55,"type":"message.created","ts":"...","data":{...}}
 ```
 Send `Last-Event-ID` (or `?since_id=55`) to replay missed events. A `: keepalive` comment is sent every 15s. The server also polls the DB every 0.5s so every change is pushed within 3s. UI pattern: on any event refetch the affected resource (`task.*` -> /api/tasks, `message.created` -> /api/messages, `brief.created`/`work_request.*` -> /api/work-requests, `agent.*`/`department.*` -> /api/org).
 
-### GET /api/health  ->  `{ "ok": true, "version": "0.6.0" }`  (no token needed)
+### GET /api/health  ->  `{ "ok": true, "version": "0.7.0" }`  (no token needed)
 
 ### Other paths
 Anything outside `/api/` serves the dashboard UI (`backend/fsa/web`); unknown paths return `index.html` so the UI can route itself.

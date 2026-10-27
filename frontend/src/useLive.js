@@ -8,7 +8,7 @@ const POLL_MS = 2000
 export const EVENT_TYPES = ['work_request.created', 'work_request.updated', 'brief.created', 'task.created', 'task.updated',
   'message.created', 'agent.created', 'agent.hired', 'agent.hire_refused', 'agent.retired', 'department.created',
   'department.updated', 'department.retired', 'report.posted', 'activation.started', 'activation.done',
-  'activation.cancelled', 'file.created']
+  'activation.cancelled', 'file.created', 'agent.renamed', 'department.renamed']
 export function useLive(fetcher = api.getState) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)

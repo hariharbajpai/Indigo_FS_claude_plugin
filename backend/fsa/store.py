@@ -151,6 +151,56 @@ class Store:
             n += 1
         return f"ag-{n}"
 
+    # ---------- names (the Owner can rename anyone) ----------
+    @staticmethod
+    def clean_name(name, what="name"):
+        n = " ".join(str(name or "").split())
+        if not n:
+            raise Invalid(f"A new {what} is required")
+        if len(n) > 80:
+            raise Invalid(f"Keep the {what} under 80 characters")
+        if n.lower() in ("owner", "system", "flight safety command"):
+            raise Invalid(f"'{n}' is reserved; pick another {what}")
+        return n
+
+    def rename_agent(self, aid, new_name):
+        """Display name only: ids, tasks and history stay. Retired agents keep their name."""
+        a = self.get_agent(aid)
+        n = self.clean_name(new_name)
+        if a["status"] != "active":
+            raise Conflict(f"{a['name']} is retired; retired agents keep their name")
+        if n == a["name"]:
+            return a
+        if self.db.one("SELECT id FROM agents WHERE status='active' AND lower(name)=lower(?) AND id!=?", (n, aid)):
+            raise Conflict(f"Another agent is already called {n}")
+        with self.db.tx() as c:
+            c.execute("UPDATE agents SET name=? WHERE id=?", (n, aid))
+            self.add_event("agent.renamed", {"id": aid, "old": a["name"], "new": n})
+            self.add_message(SYSTEM_ID, aid, f"The Owner renamed {a['name']} to {n}. Use the new name from now on.",
+                             kind="note", dept=a["dept"])
+        return self.get_agent(aid)
+
+    def rename_department(self, did, new_name):
+        """Display name only: the department id (and its knowledge-base folder) stays the same."""
+        d = self.get_department(did)
+        n = self.clean_name(new_name, "department name")
+        if d["status"] != "active":
+            raise Conflict(f"Department {d['name']} is retired")
+        if n == d["name"]:
+            return d
+        if self.db.one("SELECT id FROM departments WHERE status='active' AND lower(name)=lower(?) AND id!=?",
+                       (n, did)):
+            raise Conflict(f"Another department is already called {n}")
+        with self.db.tx() as c:
+            c.execute("UPDATE departments SET name=? WHERE id=?", (n, did))
+            head = self.get_agent(d["head_id"])
+            if head["role"].endswith(f", {d['name']}"):
+                c.execute("UPDATE agents SET role=? WHERE id=?", (head["role"][: -len(d["name"])] + n, head["id"]))
+            self.add_event("department.renamed", {"id": did, "old": d["name"], "new": n})
+            self.add_message(SYSTEM_ID, d["head_id"], f"The Owner renamed the department {d['name']} to {n}.",
+                             kind="note", dept=did)
+        return self.get_department(did)
+
     def retire_agent(self, aid):
         a = self.get_agent(aid)
         if a["kind"] == "chief":

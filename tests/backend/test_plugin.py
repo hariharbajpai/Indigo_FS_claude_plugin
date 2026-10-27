@@ -61,13 +61,18 @@ class PluginTests(unittest.TestCase):
         self.assertIn("hire_agent", frontmatter(os.path.join(REPO, "agents", "vertical-head.md"))[0]["tools"])
         self.assertNotIn("hire_agent", frontmatter(os.path.join(REPO, "agents", "dept-specialist.md"))[0]["tools"])
 
+    def test_names_are_not_hard_coded(self):
+        for f in ("chief-of-flight-safety.md", "vertical-head.md", "dept-specialist.md"):
+            body = open(os.path.join(REPO, "agents", f)).read().split("---", 2)[2]
+            self.assertNotIn("Dhruv", body, f)  # the name comes from the prompt, so a rename takes effect
+
     def test_no_new_agent_looks_like_a_department(self):
         for typ in AGENT_TYPES.values():
             self.assertFalse(typ.endswith("-agent"), typ)  # safety-team treats *-agent as departments
 
     def test_commands(self):
         names = {t[0] for t in TOOLS}
-        for cmd in ("start", "add-dept", "work", "tell", "run", "status", "stop"):
+        for cmd in ("start", "add-dept", "work", "tell", "run", "status", "stop", "rename"):
             fm, body = frontmatter(os.path.join(REPO, "skills", cmd, "SKILL.md"))
             self.assertEqual(fm["name"], cmd)
             allowed = [t.strip() for t in fm["allowed-tools"].split(",")]

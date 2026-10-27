@@ -10,13 +10,15 @@ allowed-tools: mcp__plugin_flight-safety-agents_fsc__open_dashboard, mcp__plugin
 2. Call `status`.
 3. Tell the Owner, in a few short lines:
    - The dashboard link from step 1, in full (it carries the access token), and that it updates live.
-   - Who is in the organisation: Dhruv Rebbapragada (Chief of Flight Safety), each department and its Vertical
-     Head, hired agents, and any open work.
+   - Who is in the organisation: the Chief of Flight Safety by name, each department and its Vertical Head,
+     hired agents, and any open work.
    - What they can do next:
      - `/flight-safety-agents:add-dept <department name> | <Vertical Head name> | <PDF paths>` to add a department.
      - `/flight-safety-agents:work <what to do>` to give the Chief work.
      - `/flight-safety-agents:tell <instruction>` to steer mid-way (to the Chief, or `@<department id>`).
      - `/flight-safety-agents:run` after giving work or instructions from the dashboard.
+     - `/flight-safety-agents:rename <who> -> <new name>` to rename the Chief, a Head, a specialist or a department
+       (also from the dashboard's Org Chart).
    - The agents run as subagents in this Claude Code session, on its own login.
 
 Don't run any other commands.

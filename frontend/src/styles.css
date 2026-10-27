@@ -52,3 +52,5 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em}
 .files{margin:.5rem 0}.files ul{list-style:none;padding:0;margin:.25rem 0}.files li{padding:.35rem 0;border-top:1px solid var(--line)}
 .files .path{overflow-wrap:anywhere}.pill.fmt{font-weight:600}.pill.pptx{color:#c2410c}.pill.docx{color:#1d4ed8}.pill.xlsx{color:#15803d}
 .banner.report{white-space:pre-wrap}
+button.tiny{padding:.1rem .45rem;font-size:.75rem;border-radius:5px}
+.rename{display:inline-flex;flex-wrap:wrap;gap:.3rem;align-items:center;margin-left:.3rem}.rename input{padding:.2rem .4rem;font-size:.85rem;width:14rem}

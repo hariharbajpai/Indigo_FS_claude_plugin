@@ -64,7 +64,7 @@ class ProtocolTests(unittest.TestCase):
         self.m.send({"jsonrpc": "2.0", "method": "notifications/initialized"})  # no reply expected
         self.assertEqual(self.m.rpc("ping")["result"], {})
         tools = self.m.rpc("tools/list")["result"]["tools"]
-        self.assertEqual(len(tools), 20)
+        self.assertEqual(len(tools), 21)
         for t in tools:
             self.assertLessEqual(len(PREFIX + t["name"]), 64, t["name"])  # Claude's tool-name limit
             self.assertEqual(t["inputSchema"]["type"], "object")
@@ -156,9 +156,15 @@ class FullFlowTests(unittest.TestCase):
         st = m.ok("status")
         self.assertEqual(st["work_requests"][0]["status"], "Done")
         self.assertEqual(st["work_requests"][0]["files"], [deck["path"]])
-        self.assertEqual(st["departments"][0]["hired"], ["Ravi (Hazard analyst)"])
+        self.assertEqual(st["departments"][0]["hired"], ["Ravi (Hazard analyst, ag-2)"])
         ins = m.ok("owner_instruction", text="Ab cabin safety bhi dekho", target="chief")
         self.assertEqual(ins["delivered_to"], "Dhruv Rebbapragada")
+        r = m.ok("rename", target="chief", new_name="Arjun Mehta")
+        self.assertEqual((r["old"], r["new"]), ("Dhruv Rebbapragada", "Arjun Mehta"))
+        self.assertTrue(m.ok("status")["chief"].startswith("Arjun Mehta, Chief of Flight Safety"))
+        err, text = m.call("rename", target="nobody", new_name="X")
+        self.assertTrue(err)
+        self.assertIn("Current names", text)
 
 
 if __name__ == "__main__":

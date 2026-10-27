@@ -77,3 +77,25 @@ describe('files', () => {
     expect(normalizeState({}).files).toEqual([])
   })
 })
+
+import { createElement } from 'react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import RenameButton from './components/RenameButton.jsx'
+describe('rename', () => {
+  it('edits inline and saves the trimmed name', async () => {
+    const saved = []
+    render(createElement(RenameButton, { current: 'Dhruv Rebbapragada', label: 'Chief', onSave: async (n) => { saved.push(n) } }))
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Chief' }))
+    const input = screen.getByLabelText('New name for Chief')
+    fireEvent.change(input, { target: { value: '  Arjun Mehta ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(saved).toEqual(['Arjun Mehta']))
+  })
+  it('shows the server error and keeps the box open', async () => {
+    render(createElement(RenameButton, { current: 'Asha', label: 'Head', onSave: async () => { throw new Error('Another agent is already called Ravi') } }))
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Head' }))
+    fireEvent.change(screen.getByLabelText('New name for Head'), { target: { value: 'Ravi' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('already called Ravi')
+  })
+})

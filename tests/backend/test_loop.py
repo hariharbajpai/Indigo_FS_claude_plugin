@@ -321,3 +321,54 @@ class DeliverableTests(Base):
         self.assertEqual(loopmod.wanted_formats("SRB ke liye slides aur ek Excel sheet"), ["pptx", "xlsx"])
         self.assertEqual(loopmod.wanted_formats("Word document chahiye"), ["docx"])
         self.assertEqual(loopmod.wanted_formats("hazard log check karo"), [])
+
+
+class RenameTests(Base):
+    def test_rename_chief_reaches_prompts_status_and_history(self):
+        from backend.fsa.services import rename
+        self.w.submit_work_request("x")
+        r = rename(self.s, "chief", "Arjun Mehta")
+        self.assertEqual((r["kind"], r["old"], r["new"]), ("agent", "Dhruv Rebbapragada", "Arjun Mehta"))
+        [c] = self.run_one("chief")
+        self.assertTrue(c["prompt"].startswith("You are Arjun Mehta, Chief of Flight Safety"))
+        self.assertIn("Arjun Mehta (Chief of Flight Safety)", c["description"])
+        self.assertIn("renamed Dhruv Rebbapragada to Arjun Mehta", c["prompt"])  # the note reaches him
+        self.brief(c["activation_id"])
+        self.o.activation_done(c["activation_id"], "")
+        h = self.o.next_work()["activations"][0]
+        self.assertIn("- Arjun Mehta, Chief of Flight Safety", h["prompt"])
+        self.assertNotIn("Dhruv", h["prompt"])
+        self.assertTrue(all(m["sender_name"] != "Dhruv Rebbapragada" for m in self.s.list_messages()))
+
+    def test_find_by_name_part_id_and_department(self):
+        from backend.fsa.services import rename
+        self.assertEqual(rename(self.s, "asha", "Asha Rao")["new"], "Asha Rao")  # unique part of a name
+        self.assertEqual(rename(self.s, self.kabir["id"], "Kabir S.")["old"], "Kabir Singh")
+        d = rename(self.s, "Crew Training", "Cabin & Crew Training")
+        self.assertEqual((d["kind"], d["id"]), ("department", "crew-training"))  # id and KB folder stay
+        self.assertEqual(self.s.get_agent(self.kabir["id"])["role"], "Vertical Head, Cabin & Crew Training")
+        self.assertEqual(rename(self.s, "Chief of Flight Safety", "Dhruv R.")["new"], "Dhruv R.")
+        with self.assertRaises(Invalid) as e:
+            rename(self.s, "nobody", "X")
+        self.assertIn("Current names", str(e.exception))
+        self.s.create_department("Ops", "Asha Kumar")
+        with self.assertRaises(Invalid) as e:
+            rename(self.s, "Asha", "Y")
+        self.assertIn("matches several", str(e.exception))
+
+    def test_rules(self):
+        with self.assertRaises(Conflict):
+            self.s.rename_agent(self.asha["id"], "kabir singh")  # taken (case-insensitive)
+        for bad in ("", "   ", "Owner", "x" * 81):
+            with self.assertRaises(Invalid):
+                self.s.rename_agent(self.asha["id"], bad)
+        with self.assertRaises(Conflict):
+            self.s.rename_department("engine-maintenance", "crew training")
+        self.assertEqual(self.s.rename_agent(self.asha["id"], "  Asha   Verma  ")["name"], "Asha Verma")  # no-op
+        self.s.retire_department("crew-training")
+        with self.assertRaises(Conflict):
+            self.s.rename_agent(self.kabir["id"], "New")
+        events = [e["type"] for e in self.s.list_events()]
+        self.assertNotIn("agent.renamed", events)
+        self.s.rename_agent("chief", "Arjun")
+        self.assertIn("agent.renamed", [e["type"] for e in self.s.list_events()])
