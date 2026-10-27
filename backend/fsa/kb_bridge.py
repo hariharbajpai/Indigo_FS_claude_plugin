@@ -6,7 +6,7 @@ Everything goes through the kb.py command line, run with the current python3:
   retire  withdraw a document from search (kept on disk)
   board   messages between departments, mirrored into the message feed
 
-KB root: FSA_KB_ROOT (default ./safety-kb, git-ignored). kb.py path: FSA_KB_SCRIPT, else the copy in this repo.
+KB root and kb.py path: see paths.py (default ./safety-kb in the project, git-ignored; kb.py from this plugin).
 Results keep the API vocabulary: new | duplicate | new_version.
 """
 import datetime as dt
@@ -17,16 +17,14 @@ import subprocess
 import sys
 import tempfile
 
+from . import paths
 from .store import Invalid
-
-DEFAULT_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "..", "skills", "safety-kb", "scripts", "kb.py")
 
 
 class KbBridge:
     def __init__(self, root=None, kb_script=None):
-        self.root = os.path.abspath(root or os.environ.get("FSA_KB_ROOT") or
-                                    os.path.join(os.getcwd(), "safety-kb"))
-        self.kb_script = os.path.abspath(kb_script or os.environ.get("FSA_KB_SCRIPT") or DEFAULT_SCRIPT)
+        self.root = os.path.abspath(root or paths.kb_root())
+        self.kb_script = os.path.abspath(kb_script or paths.kb_script())
 
     # ---- running kb.py ----
     def run(self, *args, check=True):
@@ -158,6 +156,53 @@ class KbBridge:
         """Withdraw every current document of the department (kb.py keeps them on disk, never deleted)."""
         for doc_id in self.list_docs(dept):
             self.run("retire", doc_id, "--dept", self.kb_dept(dept), "--reason", "department retired")
+
+    # ---- search / read / outputs (agent tools) ----
+    def search(self, query, depts=None, top=8):
+        """kb.py search --json. [] when the KB is empty or nothing matches."""
+        if not (query or "").strip():
+            raise Invalid("Give some words to search for")
+        if not os.path.isdir(self.root):
+            return []
+        args = ["search", query, "--json", "--top", str(int(top))]
+        for d in depts or []:
+            args += ["--dept", self.kb_dept(d)]
+        r = self.run(*args, check=False)
+        if r.returncode:
+            return []
+        try:
+            rows = json.loads(r.stdout or "[]")
+        except ValueError:
+            return []
+        keep = ("score", "dept", "doc", "doc_id", "revision", "effective", "section", "page", "file", "snippet")
+        return [{k: x.get(k) for k in keep} for x in rows]
+
+    def inside(self, path):
+        full = os.path.realpath(path if os.path.isabs(path) else os.path.join(self.root, path))
+        root = os.path.realpath(self.root)
+        if not full.startswith(root + os.sep):
+            raise Invalid("That file is not in the knowledge base")
+        return full
+
+    def read_file(self, path, limit=40000):
+        full = self.inside(path)
+        if not os.path.isfile(full):
+            raise Invalid(f"No such file in the knowledge base: {path}")
+        with open(full, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        return {"file": full, "text": text[:limit], "truncated": len(text) > limit}
+
+    def save_output(self, folder, name, content):
+        if not (content or "").strip():
+            raise Invalid("The output is empty")
+        base = re.sub(r"[^A-Za-z0-9._-]+", "-", folder).strip("-.") or "general"
+        fname = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.")[:80] or "output"
+        d = os.path.join(self.root, "_outputs", base)
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, fname if fname.endswith(".md") else fname + ".md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content.rstrip() + "\n")
+        return path
 
     # ---- board mirror ----
     def board_entries(self):

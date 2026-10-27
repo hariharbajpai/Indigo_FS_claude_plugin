@@ -1,10 +1,14 @@
-# Flight Safety Command API (v0.4.0)
+# Flight Safety Command API (v0.5.0)
 
-Base URL `http://localhost:8000`. JSON everywhere except `POST /api/departments` (multipart) and `GET /api/events` (SSE).
-CORS allows `http://localhost:5173` and `http://127.0.0.1:5173`. One local Owner, no auth.
+Served by `backend/fsa/server.py` (Python standard library) together with the dashboard UI. `/flight-safety-agents:start` starts it on `http://127.0.0.1:4810` (or the next free port) and gives the Owner a link with `?token=...`.
+JSON everywhere except `POST /api/departments` (multipart) and `GET /api/events` (SSE). One local Owner.
+
+**Access.** The server binds to 127.0.0.1 and answers only local `Host` headers (403 otherwise). Every `/api/*` call except `/api/health` needs the dashboard token as header `X-FSA-Token: <token>` or query `?token=<token>` (401 otherwise). No CORS: the UI is served from the same origin.
+
+**Agent mode.** In the plugin the Chief, Vertical Heads and specialists are Claude Code subagents run by the MCP server's work loop (`next_work`). Work and instructions posted here are queued for them; they act when the Owner runs `/flight-safety-agents:run` (responses carry a `hint` saying so).
 Timestamps are ISO-8601 UTC strings (`2026-10-27T04:17:16Z`). IDs are strings: `WR-1` work request, `TK-1` task, `ag-1` agent (Chief is `chief`), `dept-slug` for departments (e.g. `engine-maintenance`), messages and events use integers.
 
-Errors: `{"detail": "clear message"}` with 400 (bad input), 404 (unknown id), 409 (refused: Chief retire, hire cap, duplicate, bad state), 422 (validation).
+Errors: `{"detail": "clear message"}` with 400 (bad input), 401 (token), 403 (non-local host), 404 (unknown id), 405 (method), 409 (refused: Chief retire, hire cap, duplicate, bad state), 422 (missing field / bad JSON).
 
 ## Shapes
 
@@ -24,8 +28,11 @@ Task       { "id":"TK-1","title":"...","description":"...","acceptance":"...","d
              "message_count":3 }
 Message    { "id":10,"sender":"owner|chief|ag-2","sender_name":"Owner","recipient":"chief|ag-2|owner","recipient_name":"...",
              "dept":"engine-maintenance"|null,"task_id":"TK-1"|null,"work_request_id":"WR-1"|null,
-             "kind":"request|brief|assign|status|hire|instruction|board|report|refusal|chat","body":"...","ts":"..." }
-Event      { "id":55,"type":"work_request.created|brief.created|task.created|task.updated|message.created|agent.hired|agent.hire_refused|department.created|department.retired|work_request.updated|report.posted","ts":"...","data":{...} }
+             "kind":"request|brief|assign|status|blocked|hire|instruction|question|review|board|report|refusal|chat|note","body":"...","ts":"..." }
+Event      { "id":55,"type":"work_request.created|work_request.updated|brief.created|task.created|task.updated|message.created|agent.created|agent.hired|agent.hire_refused|agent.retired|department.created|department.updated|department.retired|report.posted|activation.started|activation.done|activation.cancelled|output.saved","ts":"...","data":{...} }
+Activity   { "running":[{"activation_id":"act-1a2b3c4d","agent_id":"ag-2","agent_name":"Asha Verma","started_at":"..."}],
+             "waiting":[{"agent_id":"chief","agent_name":"Dhruv Rebbapragada","messages":1}],
+             "recent":[{"id":"act-...","agent_id":"chief","agent_name":"...","status":"done|cancelled","started_at":"...","ended_at":"...","report":"..."}] }
 ```
 
 ## Endpoints
@@ -35,8 +42,13 @@ Event      { "id":55,"type":"work_request.created|brief.created|task.created|tas
 { "chief": Agent,
   "counts": {"departments":2,"agents":6,"work_requests":3,"tasks":{"todo":1,"in_progress":2,"review":0,"blocked":0,"done":4},"messages":42},
   "work_requests": [WorkRequest],
-  "last_event_id": 55 }
+  "last_event_id": 55,
+  "activity": Activity,
+  "kb_root": "/path/to/project/safety-kb" }
 ```
+
+### GET /api/activity  ->  `Activity`
+Which subagents are running now in Claude Code, which have work waiting (run `/flight-safety-agents:run`), and the last runs with their reports.
 
 ### GET /api/org
 Org chart, Chief at the top.
@@ -53,12 +65,12 @@ Add `?include_retired=true` to include retired departments.
   "tasks": [Task], "report": Message|null }
 ```
 ### POST /api/work-requests
-Body `{ "text": "Inspect hydraulic leaks on fleet B, English or Hinglish" }` -> 201 `WorkRequest` (status Received). The Chief processes it (brief + tasks) asynchronously within seconds; watch SSE. Add `?wait=true` to plan synchronously and return `{request, brief, tasks}` instead (used by curl demos and tests).
-Empty text -> 422.
+Body `{ "text": "Inspect hydraulic leaks on fleet B, English or Hinglish" }` -> 201 `WorkRequest` (status Received) plus `hint`. The Chief subagent writes the brief and tasks when the work loop runs. (Offline mode without agents, used in tests: the keyword planner briefs immediately; `?wait=true` returns `{request, brief, tasks}`.)
+Missing `text` -> 422; blank text -> 400.
 
 ### POST /api/instructions
-Body `{ "target": "chief" | "<dept id>", "text": "...", "work_request_id": "WR-1" /* optional, defaults to latest open request */ }` -> 201 `{ "message": Message, "brief": Brief|null, "blocked_tasks": ["TK-2"] }`.
-Delivered as message from `owner`. The Chief re-plans: new brief version, conflicting in-flight tasks become `blocked` with a note. Unknown dept -> 404; empty text -> 422.
+Body `{ "target": "chief" | "<dept id>", "text": "...", "work_request_id": "WR-1" /* optional, defaults to latest open request */ }` -> 201 `{ "message": Message, "brief": null, "blocked_tasks": [], "hint": "..." }`.
+Delivered as a message from `owner` (to a department: to its Vertical Head, with a copy to the Chief). The Chief re-plans when the work loop runs: new brief version, conflicting in-flight tasks become `blocked` with a note, new tasks added. Unknown dept -> 404; blank text -> 400; missing field -> 422.
 
 ### GET /api/tasks?status=&dept=&work_request_id=  ->  `[Task]`
 ### GET /api/tasks/{id}  ->  `Task`
@@ -99,4 +111,7 @@ data: {"id":55,"type":"message.created","ts":"...","data":{...}}
 ```
 Send `Last-Event-ID` (or `?since_id=55`) to replay missed events. A `: keepalive` comment is sent every 15s. The server also polls the DB every 0.5s so every change is pushed within 3s. UI pattern: on any event refetch the affected resource (`task.*` -> /api/tasks, `message.created` -> /api/messages, `brief.created`/`work_request.*` -> /api/work-requests, `agent.*`/`department.*` -> /api/org).
 
-### GET /api/health  ->  `{ "ok": true, "version": "0.4.0" }`
+### GET /api/health  ->  `{ "ok": true, "version": "0.5.0" }`  (no token needed)
+
+### Other paths
+Anything outside `/api/` serves the dashboard UI (`backend/fsa/web`); unknown paths return `index.html` so the UI can route itself.

@@ -1,12 +1,14 @@
 import { createContext, createElement, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { api } from './api.js'
+import { api, eventsUrl } from './api.js'
 
 const POLL_MS = 2000
 
 // SSE (/api/events) sends NAMED events (API.md); any of them triggers a (debounced) refetch.
 // If SSE is unavailable, poll every 2s.
 export const EVENT_TYPES = ['work_request.created', 'work_request.updated', 'brief.created', 'task.created', 'task.updated',
-  'message.created', 'agent.hired', 'agent.hire_refused', 'department.created', 'department.retired', 'report.posted']
+  'message.created', 'agent.created', 'agent.hired', 'agent.hire_refused', 'agent.retired', 'department.created',
+  'department.updated', 'department.retired', 'report.posted', 'activation.started', 'activation.done',
+  'activation.cancelled']
 export function useLive(fetcher = api.getState) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
@@ -37,7 +39,7 @@ export function useLive(fetcher = api.getState) {
     if (typeof EventSource === 'undefined') {
       startPolling()
     } else {
-      es = new EventSource('/api/events')
+      es = new EventSource(eventsUrl())
       es.onopen = () => { stopPolling(); setMode('sse'); refresh() }
       let debounce = null
       const onEvent = () => { clearTimeout(debounce); debounce = setTimeout(refresh, 150) }

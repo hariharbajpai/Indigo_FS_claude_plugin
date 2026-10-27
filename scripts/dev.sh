@@ -1,32 +1,19 @@
 #!/usr/bin/env bash
-# One command: backend on :8000 and the Vite frontend on :5173. Ctrl-C stops both.
-# Usage: scripts/dev.sh
+# Development only: the dashboard server on :4810 (no token) plus the Vite dev server on :5173 with live reload.
+# In Claude Code you never need this: /flight-safety-agents:start runs the bundled dashboard for you.
+# Usage: scripts/dev.sh        (KB: ./safety-kb, override with FSA_KB_ROOT)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found. Install Python 3 first." >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found. Install Python 3.9+ first." >&2; exit 1; }
 command -v npm >/dev/null 2>&1 || { echo "ERROR: npm not found. Install Node.js (includes npm) first." >&2; exit 1; }
-
-# Venv: a stamp file marks a completed install, so an interrupted install is redone.
-STAMP=".venv/.deps-installed"
-if [ ! -x .venv/bin/python ] || [ ! -f "$STAMP" ] || [ backend/requirements.txt -nt "$STAMP" ]; then
-  if [ ! -x .venv/bin/python ] || ! .venv/bin/python -c 'import sys' >/dev/null 2>&1; then
-    rm -rf .venv
-    python3 -m venv .venv
-  fi
-  rm -f "$STAMP"
-  .venv/bin/python -m pip install -q -r backend/requirements.txt
-  touch "$STAMP"
-fi
 
 if [ ! -d frontend/node_modules ] || [ frontend/package.json -nt frontend/node_modules ]; then
   (cd frontend && npm install --no-audit --no-fund)
 fi
 
-export FSA_DB="${FSA_DB:-$ROOT/safety-kb/_team/fsa.db}"
 export FSA_KB_ROOT="${FSA_KB_ROOT:-$ROOT/safety-kb}"
-mkdir -p "$(dirname "$FSA_DB")"
 
 PIDS=()
 kill_tree() {
@@ -43,7 +30,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-.venv/bin/python -m backend.fsa --port 8000 &
+python3 -m backend.fsa serve --port 4810 --token "" &
 PIDS+=($!)
 (cd frontend && exec npm run dev -- --port 5173 --strictPort) &
 PIDS+=($!)
@@ -56,9 +43,8 @@ wait_for() { # url name pid
   done
   echo "ERROR: $2 did not become healthy at $1" >&2; return 1
 }
-wait_for http://localhost:8000/api/health Backend "${PIDS[0]}" || \
-  wait_for http://localhost:8000/docs Backend "${PIDS[0]}"
+wait_for http://localhost:4810/api/health Backend "${PIDS[0]}"
 wait_for http://localhost:5173/ Frontend "${PIDS[1]}"
-echo "Backend  http://localhost:8000  (API docs /docs)"
-echo "Frontend http://localhost:5173  (Ctrl-C to stop both)"
+echo "Dashboard server http://localhost:4810  (bundled UI + API)"
+echo "Dev UI           http://localhost:5173  (live reload; Ctrl-C stops both)"
 wait

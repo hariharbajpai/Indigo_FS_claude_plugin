@@ -1,11 +1,34 @@
-// API client for backend/API.md (v0.4.0). getState() composes several endpoints into the shape the views use.
+// API client for backend/API.md (v0.5.0). getState() composes several endpoints into the shape the views use.
+// Every call carries the dashboard token from the link /flight-safety-agents:start gives the Owner (?token=...).
+const TOKEN_KEY = 'fsa-dashboard-token'
+
+export function tokenFrom(search, stored) {
+  const t = new URLSearchParams(search || '').get('token')
+  return t || stored || ''
+}
+
+function loadToken() {
+  let stored = ''
+  try { stored = localStorage.getItem(TOKEN_KEY) || '' } catch { /* storage blocked */ }
+  const t = tokenFrom(typeof window !== 'undefined' ? window.location.search : '', stored)
+  try { if (t) localStorage.setItem(TOKEN_KEY, t) } catch { /* storage blocked */ }
+  return t
+}
+
+const TOKEN = loadToken()
+
+export const eventsUrl = () => '/api/events' + (TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : '')
+
 async function request(path, opts = {}) {
-  const res = await fetch('/api' + path, opts)
+  const headers = { ...(opts.headers || {}) }
+  if (TOKEN) headers['X-FSA-Token'] = TOKEN
+  const res = await fetch('/api' + path, { ...opts, headers })
   let body = null
   try { body = await res.json() } catch { /* empty body */ }
   if (!res.ok) {
     const detail = body && (body.detail || body.error || body.message)
-    const msg = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : `Request failed (${res.status})`
+    let msg = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : `Request failed (${res.status})`
+    if (res.status === 401) msg = 'This page needs its access link. In Claude Code run /flight-safety-agents:start and open the link it gives you.'
     const err = new Error(msg)
     err.status = res.status
     err.body = body
@@ -20,9 +43,11 @@ const json = (method, data) => ({
   body: JSON.stringify(data),
 })
 
+const NO_ACTIVITY = { running: [], waiting: [], recent: [] }
+
 const EMPTY = {
   chief: null, departments: [], agents: [], work_requests: [],
-  briefs: [], tasks: [], messages: [], stats: null,
+  briefs: [], tasks: [], messages: [], stats: null, activity: NO_ACTIVITY,
 }
 
 // Fill missing collections so views never crash on a partial payload.
@@ -31,11 +56,13 @@ export function normalizeState(s) {
   for (const k of ['departments', 'agents', 'work_requests', 'briefs', 'tasks', 'messages']) {
     if (!Array.isArray(out[k])) out[k] = []
   }
+  const a = out.activity || {}
+  out.activity = { running: a.running || [], waiting: a.waiting || [], recent: a.recent || [] }
   return out
 }
 
 // ---- adapters: API.md shapes -> view shapes ----
-export const adaptAgent = (a) => ({ ...a, dept_id: a.dept ?? null })
+export const adaptAgent = (a) => ({ ...a, dept_id: a.dept ?? null, hire_reason: a.reason ?? null })
 export const adaptTask = (t) => ({
   ...t,
   dept_id: t.dept,
@@ -74,6 +101,8 @@ export function buildState({ overview, org, departments, requests, details, task
     tasks: taskList,
     messages: messages.map(adaptMessage),
     stats: { agents: overview.counts.agents, messages: overview.counts.messages, departments: overview.counts.departments },
+    activity: overview.activity,
+    kb_root: overview.kb_root,
   })
 }
 

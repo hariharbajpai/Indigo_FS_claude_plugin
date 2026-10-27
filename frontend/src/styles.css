@@ -44,3 +44,8 @@ label{display:block;margin:.5rem 0 .2rem;font-weight:600}
 .filters label{margin:0;font-weight:400}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:.75rem}
 @media(max-width:700px){main{padding:.5rem}.kanban{grid-template-columns:repeat(5,80%)}}
+.pill.working{color:#fff;background:var(--accent);border-color:var(--accent);margin-right:.25rem}
+.agent-node.is-working{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
+.banner.info{background:color-mix(in srgb,var(--accent) 14%,var(--card));color:var(--text)}
+.runs{list-style:none;padding:0;margin:.25rem 0 0}.runs li{padding:.35rem 0;border-top:1px solid var(--line)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em}

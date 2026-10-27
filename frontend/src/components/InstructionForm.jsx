@@ -10,9 +10,9 @@ export default function InstructionForm({ departments }) {
     if (!text.trim()) return setState({ busy: false, error: 'Write an instruction first.', ok: '' })
     setState({ busy: true, error: '', ok: '' })
     try {
-      await api.sendInstruction(target, text.trim())
+      const r = await api.sendInstruction(target, text.trim())
       setText('')
-      setState({ busy: false, error: '', ok: 'Instruction delivered. See it in the Chat Feed.' })
+      setState({ busy: false, error: '', ok: r?.hint || 'Instruction delivered. See it in the Chat Feed.' })
     } catch (err) { setState({ busy: false, error: err.message, ok: '' }) }
   }
   return (

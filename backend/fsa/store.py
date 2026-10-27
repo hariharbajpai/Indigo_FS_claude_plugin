@@ -3,7 +3,7 @@ import json
 import re
 from datetime import datetime, timezone
 
-from . import CHIEF_ID, CHIEF_NAME, CHIEF_ROLE, HIRE_CAP
+from . import CHIEF_ID, CHIEF_NAME, CHIEF_ROLE, HIRE_CAP, SYSTEM_ID
 from .db import Database
 
 TASK_STATUSES = ("todo", "in_progress", "review", "blocked", "done")
@@ -80,6 +80,8 @@ class Store:
     def _name(self, ident):
         if ident == "owner":
             return "Owner"
+        if ident == SYSTEM_ID:
+            return "Flight Safety Command"
         a = self.db.one("SELECT name FROM agents WHERE id=?", (ident,))
         return a["name"] if a else ident
 
@@ -203,7 +205,7 @@ class Store:
                       (did, name, hid, source, "active", now()))
             self.add_event("department.created", {"id": did, "head_id": hid})
             self.add_message(CHIEF_ID, hid, f"Welcome {head_name}. You head {name}; "
-                             "I will route tasks to you.", kind="chat", dept=did)
+                             "I will route tasks to you.", kind="note", dept=did)
         return self.get_department(did), self.get_agent(hid)
 
     def retire_department(self, did):
@@ -399,8 +401,14 @@ class Store:
                       (tid, author, status, note.strip(), now()))
             self.add_event("task.updated", {"id": tid, "status": status, "dept": t["dept"],
                                             "work_request_id": t["work_request_id"]})
-            self.add_message(author, CHIEF_ID, f"{tid} -> {status}: {note.strip()}", kind="status",
-                             task_id=tid, dept=t["dept"], work_request_id=t["work_request_id"])
+            if author != CHIEF_ID:  # a blocked task needs the Chief; other changes are for information
+                self.add_message(author, CHIEF_ID, f"{tid} -> {status}: {note.strip()}",
+                                 kind="blocked" if status == "blocked" else "status",
+                                 task_id=tid, dept=t["dept"], work_request_id=t["work_request_id"])
+            else:
+                self.add_message(author, t["agent_id"] or self.get_department(t["dept"])["head_id"],
+                                 f"{tid} -> {status}: {note.strip()}", kind="status", task_id=tid,
+                                 dept=t["dept"], work_request_id=t["work_request_id"])
         return self.get_task(tid)
 
     def assign_task(self, tid, agent_id):
@@ -417,6 +425,61 @@ class Store:
                 self.add_message(head, agent_id, f"Assigned {tid}: {t['title']}", kind="assign",
                                  task_id=tid, dept=t["dept"], work_request_id=t["work_request_id"])
         return self.get_task(tid)
+
+    # ---------- meta (cursors) ----------
+    def get_meta(self, key, default=None):
+        r = self.db.one("SELECT value FROM meta WHERE key=?", (key,))
+        return r["value"] if r else default
+
+    def set_meta(self, key, value):
+        with self.db.tx() as c:
+            c.execute("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (key, str(value)))
+
+    # ---------- activations (one subagent run) ----------
+    def create_activation(self, aid, agent_id, work_request_id, first_message, last_message):
+        """watermark = the newest message id when the run started (orders runs against messages)."""
+        with self.db.tx() as c:
+            c.execute("INSERT INTO activations(id,agent_id,status,work_request_id,first_message,last_message,"
+                      "watermark,started_at) VALUES(?,?,'running',?,?,?,?,?)",
+                      (aid, agent_id, work_request_id, first_message, last_message, self.last_message_id(), now()))
+            self.add_event("activation.started", {"id": aid, "agent_id": agent_id})
+        return self.get_activation(aid)
+
+    def get_activation(self, aid):
+        a = self.db.one("SELECT * FROM activations WHERE id=?", (aid,))
+        if not a:
+            raise NotFound(f"Unknown activation {aid}")
+        return a
+
+    def list_activations(self, status=None, limit=50):
+        sql, args = "SELECT * FROM activations", []
+        if status:
+            sql += " WHERE status=?"
+            args.append(status)
+        rows = self.db.q(sql + " ORDER BY started_at DESC, rowid DESC LIMIT ?", args + [limit])
+        for r in rows:
+            r["agent_name"] = self._name(r["agent_id"])
+        return rows
+
+    def end_activation(self, aid, status, report=None):
+        with self.db.tx() as c:
+            c.execute("UPDATE activations SET status=?, ended_at=?, report=? WHERE id=?",
+                      (status, now(), report, aid))
+            self.add_event("activation." + status, {"id": aid})
+        return self.get_activation(aid)
+
+    def count_activations(self, work_request_id):
+        return self.db.one("SELECT COUNT(*) n FROM activations WHERE work_request_id=? AND status!='cancelled'",
+                           (work_request_id,))["n"]
+
+    def inbox(self, agent_id, after_id=0):
+        rows = self.db.q("SELECT * FROM messages WHERE recipient=? AND id>? AND sender!=? ORDER BY id",
+                         (agent_id, after_id, agent_id))
+        return [self._msg(r) for r in rows]
+
+    def last_message_id(self):
+        return self.db.one("SELECT MAX(id) m FROM messages")["m"] or 0
 
     # ---------- overview ----------
     def overview(self):

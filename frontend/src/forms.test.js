@@ -43,3 +43,24 @@ describe('API.md adapters', () => {
     expect(s.briefs).toHaveLength(1)
   })
 })
+
+import { normalizeState, tokenFrom, adaptAgent } from './api.js'
+describe('v0.5 dashboard', () => {
+  it('reads the dashboard token from the link, else from storage', () => {
+    expect(tokenFrom('?token=abc', 'old')).toBe('abc')
+    expect(tokenFrom('', 'old')).toBe('old')
+    expect(tokenFrom('?x=1', '')).toBe('')
+  })
+  it('always has an activity block', () => {
+    expect(normalizeState({}).activity).toEqual({ running: [], waiting: [], recent: [] })
+    const s = normalizeState({ activity: { running: [{ agent_id: 'chief' }] } })
+    expect(s.activity.running).toHaveLength(1)
+    expect(s.activity.waiting).toEqual([])
+  })
+  it('passes activity through and shows hire reasons', () => {
+    const s = buildState({ overview: { counts: { agents: 1, messages: 0, departments: 0 }, activity: { running: [], waiting: [{ agent_id: 'chief', agent_name: 'C' }], recent: [] } },
+      org: { chief: { id: 'chief' }, departments: [] }, departments: [], requests: [], details: [], tasks: [], messages: [] })
+    expect(s.activity.waiting[0].agent_name).toBe('C')
+    expect(adaptAgent({ id: 'ag-2', reason: 'needs analysis' }).hire_reason).toBe('needs analysis')
+  })
+})

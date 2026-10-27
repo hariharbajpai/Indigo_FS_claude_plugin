@@ -28,6 +28,9 @@ export default function Layout() {
           ))}
         </nav>
         <div className="topbar-right">
+          {data && data.activity.running.length > 0 && (
+            <span className="pill working" title="Agents running in Claude Code">{data.activity.running.length} working</span>
+          )}
           <span className={`pill ${mode}`} title="Live connection">{mode === 'sse' ? 'live' : mode}</span>
           <button type="button" className="ghost" onClick={() => setDark(!dark)} aria-pressed={dark}>
             {dark ? 'Light' : 'Dark'}
@@ -37,6 +40,12 @@ export default function Layout() {
       <main>
         {error && !data && <div className="banner error" role="alert">Cannot reach the API: {error.message}</div>}
         {error && data && <div className="banner warn" role="status">Connection problem, showing last data. {error.message}</div>}
+        {data && data.activity.running.length === 0 && data.activity.waiting.length > 0 && (
+          <div className="banner info" role="status">
+            {data.activity.waiting.map((a) => a.agent_name).join(', ')} {data.activity.waiting.length === 1 ? 'has' : 'have'} new
+            work waiting. In Claude Code, run <code>/flight-safety-agents:run</code> so the team picks it up.
+          </div>
+        )}
         {loading ? <p className="muted">Loading...</p> : data && <Outlet />}
       </main>
     </div>

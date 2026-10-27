@@ -48,7 +48,7 @@ A team of flight-safety department agents (**Audit, SMS, FDM**, plus any departm
 
 The same from a normal terminal: `claude plugin marketplace add hariharbajpai/Indigo_FS_claude_plugin` then `claude plugin install flight-safety-agents@flight-safety-agents`. Both forms also accept a local folder path in place of `<user>/<repo>`, which is handy for testing before you push.
 
-Restart or reload, then type `/` and look for the `safety-kb`, `safety-team`, `sms-dept`, `audit-dept`, `fdm-dept` and `safety-add-department` skills. Plugin skills are namespaced, so they may show as `flight-safety-agents:safety-team`. The agents are listed under `/agents`.
+Restart or reload, then type `/` and look for the `safety-kb`, `safety-team`, `sms-dept`, `audit-dept`, `fdm-dept` and `safety-add-department` skills, and the Flight Safety Command commands (`start`, `add-dept`, `work`, `tell`, `run`, `status`, `stop`). Plugin skills are namespaced, so they may show as `flight-safety-agents:safety-team`. The agents are listed under `/agents`.
 
 Check a clone of the repo before publishing: `claude plugin validate .`
 
@@ -174,41 +174,63 @@ Manuals, FDM data and reports are confidential. `.gitignore` excludes `safety-kb
 - **Memory is only as good as what gets recorded.** Agents are told to record sparingly and with sources; review it now and then.
 - The department skills are frameworks. They do not contain your regulations or procedures, only how to work with them. Quality depends on the documents you ingest.
 
-## Flight Safety Command (v0.4.0): Chief, Vertical Heads, hiring and live dashboard
+## Flight Safety Command (v0.5.0): a Chief, Vertical Heads and a live dashboard, inside Claude Code
 
-On top of the plugin there is a small web app: a FastAPI backend (`backend/`), a React dashboard (`frontend/`) and a Chief agent (`agents/chief-agent.md`).
+Flight Safety Command runs a small flight-safety organisation as **subagents in your Claude Code session** (desktop app, IDE or terminal), on your own login. No API key, no terminal, nothing to install beyond the plugin.
 
-### Chief
-**Dhruv Rebbapragada, Chief of Flight Safety**, is seeded on first start and cannot be retired. The Owner gives work to the Chief (Received -> Briefed -> In progress -> Done). The Chief writes a versioned brief and tasks, each owned by one department. If no department fits, the brief asks which department to add. Owner instructions (to the Chief or a department) re-plan the brief; conflicting in-flight tasks become `blocked`.
+```
+Owner (you) ──work / instructions──▶ Dhruv Rebbapragada, Chief of Flight Safety
+                                         │ brief (versioned) + tasks, one department each
+                       ┌─────────────────┼─────────────────┐
+                 Vertical Head      Vertical Head     Vertical Head      (one per department: its PDFs + Head name)
+                       │ does the task, or hires specialists (max 5 active agents per department)
+                   specialists ──▶ results saved as markdown, task marked done ──▶ Chief reports to the Owner
+```
 
-### Vertical Heads and departments
-Add a department with one or more PDFs, a department name and a **Vertical Head name** (both required). PDFs go through the real `skills/safety-kb/scripts/kb.py`: `match` first (a duplicate or new version returns `needs_decision`, nothing is written), then `ingest` (or `ingest --replace` to update). Retiring a department withdraws its documents with `kb.py retire`; they stay on disk. The Head moves tasks (`in_progress`, `review`, `blocked`, `done`, note required).
+### Commands
 
-### Hiring
-A Vertical Head can hire agents for a task: cap 5 active agents per department, every hire (and refusal) is logged.
+| Command | What it does |
+|---|---|
+| `/flight-safety-agents:start` | Starts the live dashboard and gives you its link (the link carries an access token). |
+| `/flight-safety-agents:add-dept Engine Maintenance \| Asha Verma \| ~/Docs/engine_manual.pdf` | Adds a department from its PDFs plus the Vertical Head's name. Duplicates and new versions are detected and you decide: update the existing department or add a new one. |
+| `/flight-safety-agents:work <request>` | Gives the Chief work (English or Hinglish). The team runs until it is done or needs you. |
+| `/flight-safety-agents:tell [@dept-id] <instruction>` | Steers mid-way (to the Chief, or one department) or answers the Chief's question. The Chief re-plans: new brief version, conflicting tasks blocked, new tasks added. |
+| `/flight-safety-agents:run` | Runs waiting work, for example after you sent work or an instruction from the dashboard. |
+| `/flight-safety-agents:status`, `/flight-safety-agents:stop` | Status in chat; stop the dashboard server. |
+
+### How a request flows
+1. You send work. The **Chief** (`agents/chief-of-flight-safety.md`) searches what each department's manuals cover and writes the **brief**: summary, goals and tasks, each owned by one department. If no department fits, he asks which one to add and creates no tasks.
+2. Each **Vertical Head** (`agents/vertical-head.md`) gets its tasks. It does them from its department's manuals, or **hires** a specialist (`agents/dept-specialist.md`) for a task. Every hire, and every refusal at the cap, is logged.
+3. Agents work only from the uploaded manuals (`search_manuals`, `read_section`), cite document, section and page, save results with `save_output` (`safety-kb/_outputs/<WR>/<task>.md`) and move tasks through `todo → in_progress → done` (or `blocked`), always with a note.
+4. When the last task is done the Chief reads the notes and outputs and sends you a **completion report**.
+
+The main session is only the office manager: it asks the plugin's MCP server what is ready (`next_work`), starts those agents in parallel (up to 4 at a time) and reports back when each finishes. An agent wakes only for messages it must act on (new task, instruction, question, blocked task, review). A work request pauses after 60 agent runs since your last message and asks you to continue, so a loop can never run away.
 
 ### Dashboard
-Org chart, task board, work requests, and a chat feed with every message (Owner, Chief, Heads, hired agents, and the inter-department board mirrored from `kb.py board`). Updates arrive live over SSE (`/api/events`). The Owner can send further instructions at any time. API reference: `backend/API.md` (interactive docs at `/docs`).
+Overview (work requests, briefs, progress, **who is working now**, recent agent runs), Task Board (kanban with each task's note history), Org Chart (Chief → Heads → hired specialists, with hire reasons; agents at work are highlighted), Chat Feed (every message between you and the agents, filterable by department, agent and task) and Owner Console (new work, instructions, add/update/retire departments). Updates are live. Work or instructions sent from the dashboard are picked up when you run `/flight-safety-agents:run` in Claude Code; the dashboard reminds you.
 
-### Run
-```bash
-scripts/dev.sh        # creates .venv, npm install, starts backend :8000 and frontend :5173; Ctrl-C stops both
-```
-Needs `python3` (3.10+) and `node`/`npm` (18+); PDF text needs `pdftotext`, pypdf or PyMuPDF (as for `kb.py`). Backend only: `.venv/bin/python -m backend.fsa --port 8000`.
+The dashboard server binds to 127.0.0.1 only, accepts only local Host headers and needs the token from the `/start` link for every API call.
 
-Environment: `FSA_DB` (SQLite file, default `./safety-kb/_team/fsa.db`), `FSA_KB_ROOT` (knowledge-base root, default `./safety-kb`, git-ignored), `FSA_KB_SCRIPT` (alternative kb.py), `ANTHROPIC_API_KEY` and `FSA_MODEL` for a Claude planner. Without a key a deterministic keyword planner is used.
+### Where things live
+Everything is in the project's `./safety-kb/` (git-ignored; set `SAFETY_KB_DIR` or `FSA_KB_ROOT` to move it): department manuals as markdown (`<department>/`), agent outputs (`_outputs/`), and the team database and dashboard state (`_team/fsa.db`, `_team/dashboard.json`, `_team/dashboard.log`). The same knowledge base serves the Audit, SMS and FDM skills above.
+
+### Requirements
+`python3` 3.9+ on your PATH (standard library only) and, for PDFs, `pdftotext` (`brew install poppler`) or `pip install pypdf`, as for `kb.py`. Node is needed only to rebuild the dashboard (`cd frontend && npm run build` writes `backend/fsa/web`, which ships with the plugin).
 
 ### Tests
 ```bash
-python3 -m unittest discover tests                                    # kb.py tests, standard library only
-.venv/bin/python -m pytest tests/backend                              # backend (pip install -r backend/requirements.txt first)
-cd frontend && npm install && npm test && npm run build               # frontend
+python3 -m unittest discover tests                       # kb.py (v0.3), standard library only
+python3 -m pytest tests/backend                          # store, workflow, work loop, MCP server over stdio, dashboard server, plugin wiring
+cd frontend && npm install && npm test && npm run build  # dashboard
 ```
 
-### Known gaps
-- `/api/messages` returns at most 500 messages by default; the frontend has no paging.
-- The Vite proxy is hardcoded to `http://localhost:8000` (`frontend/vite.config.js`).
-- No browser-level end-to-end tests (frontend has unit tests only).
+### Development
+`scripts/dev.sh` runs the dashboard server on :4810 without a token plus the Vite dev server on :5173 with live reload. `python3 -m backend.fsa start|stop|status [--kb PATH]` manages the background dashboard; `python3 -m backend.fsa mcp` runs the MCP server on stdio. API reference: `backend/API.md`.
+
+### Known limits
+- Agents run only while a command (`/work`, `/tell`, `/run`) is running the loop in Claude Code; the dashboard shows and queues, it does not run agents by itself.
+- `/api/messages` returns at most 500 messages per call by default; the Chat Feed shows the latest window.
+- No browser-level end-to-end tests (the dashboard has unit tests; the backend is tested over real HTTP and stdio).
 
 ## Repository layout
 
@@ -219,9 +241,12 @@ skills/
   safety-team/         coordinator
   sms-dept/  audit-dept/  fdm-dept/
   safety-add-department/   + assets/ templates
-agents/                sms-agent, audit-agent, fdm-agent, chief-agent
-backend/               FastAPI app (Chief, departments, hiring, SSE) + API.md
-frontend/              React dashboard (Vite)
+  start/ add-dept/ work/ tell/ run/ status/ stop/   Flight Safety Command commands
+agents/                sms-agent, audit-agent, fdm-agent; chief-of-flight-safety, vertical-head, dept-specialist
+.mcp.json              the Flight Safety Command MCP server (python3 backend/mcp_main.py)
+backend/               Flight Safety Command (standard library): store, workflow, work loop, MCP server,
+                       dashboard server, bundled UI in backend/fsa/web, API.md
+frontend/              dashboard source (React + Vite)
 scripts/package-skills.sh, scripts/dev.sh
 tests/                 python3 -m unittest discover -s tests -v   (backend tests in tests/backend, run with pytest)
 ```
@@ -230,7 +255,7 @@ tests/                 python3 -m unittest discover -s tests -v   (backend tests
 
 ```bash
 python3 -m unittest discover -s tests -v     # builds fictional PDF/DOCX/MD fixtures, no third-party libraries
-python3 -m pytest tests/backend              # web app backend (needs backend/requirements.txt)
+python3 -m pytest tests/backend              # Flight Safety Command (pip install pytest)
 ```
 
 Contributions welcome: more departments (Investigation, Cabin, Ground, Maintenance safety), better table handling for PDFs, a semantic search backend. Do not commit real manuals or flight data.

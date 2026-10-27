@@ -1,4 +1,4 @@
-"""SQLite connection and schema. One shared connection guarded by a lock (single writer)."""
+"""SQLite connection and schema. One shared connection per process, guarded by a lock."""
 import os
 import sqlite3
 import threading
@@ -38,23 +38,36 @@ CREATE TABLE IF NOT EXISTS messages(
   body TEXT NOT NULL, ts TEXT NOT NULL, ref TEXT UNIQUE);
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, ts TEXT NOT NULL, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS activations(
+  id TEXT PRIMARY KEY, agent_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','cancelled')),
+  work_request_id TEXT, first_message INTEGER, last_message INTEGER, watermark INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL, ended_at TEXT, report TEXT);
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_msg_task ON messages(task_id);
+CREATE INDEX IF NOT EXISTS ix_msg_recipient ON messages(recipient);
 CREATE INDEX IF NOT EXISTS ix_task_wr ON tasks(work_request_id);
+CREATE INDEX IF NOT EXISTS ix_act_status ON activations(status);
 """
 
 
 def default_path():
-    return os.environ.get("FSA_DB") or os.path.join(os.getcwd(), "safety-kb", "_team", "fsa.db")
+    from .paths import db_path
+    return db_path()
 
 
 class Database:
+    """The MCP server and the dashboard server are separate processes on the same file: WAL mode,
+    BEGIN IMMEDIATE for writes and a busy timeout keep them from stepping on each other."""
+
     def __init__(self, path=None):
         self.path = path or default_path()
         if self.path != ":memory:":
             os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         self.lock = threading.RLock()
-        self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=15)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA busy_timeout=15000")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         self._depth = 0

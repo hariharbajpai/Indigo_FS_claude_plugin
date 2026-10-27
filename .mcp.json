@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "fsc": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/backend/mcp_main.py"]
+    }
+  }
+}

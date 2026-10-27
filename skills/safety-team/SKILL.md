@@ -14,6 +14,7 @@ A subagent cannot start other subagents, so coordination always happens here in 
 - Run the safety-kb skill's `kb.py status`. The departments with documents are the ones that can give company-specific answers.
 - Departments with an agent but an empty KB can still do general work; say so ("Audit has no manuals loaded yet, so I'll mark its input as general knowledge").
 - Custom departments (made with `safety-add-department`) appear as extra folders in the KB and extra `*-agent` agents. Treat them like the built-in ones.
+- `chief-of-flight-safety`, `vertical-head` and `dept-specialist` belong to Flight Safety Command (`/flight-safety-agents:work`). They are not departments: never run them from here.
 
 ## 2. Decide who works
 

@@ -4,13 +4,15 @@ import AgentNode from '../components/AgentNode.jsx'
 export default function OrgChart() {
   const { data } = useStore()
   const chief = data.chief
+  const working = new Set(data.activity.running.map((a) => a.agent_id))
   return (
     <section className="tree">
       <h2>Org Chart</h2>
       <ul style={{ borderLeft: 0, paddingLeft: 0 }}>
-        <AgentNode agent={{ name: chief?.name || 'Dhruv Rebbapragada', role: chief?.role || 'Chief of Flight Safety' }}>
+        <AgentNode agent={{ name: chief?.name || 'Dhruv Rebbapragada', role: chief?.role || 'Chief of Flight Safety' }}
+          working={working.has('chief')}>
           {data.departments.length === 0
-            ? <p className="muted">No departments yet. Add one from the Owner Console.</p>
+            ? <p className="muted">No departments yet. In Claude Code run /flight-safety-agents:add-dept, or add one from the Owner Console.</p>
             : (
               <ul>
                 {data.departments.map((d) => {
@@ -21,8 +23,8 @@ export default function OrgChart() {
                     <li key={d.id}>
                       <div className={`small ${retired ? 'muted' : ''}`}><strong>{d.name}</strong>{retired && ' (retired)'}</div>
                       <ul>
-                        {head && <AgentNode agent={head}>
-                          {hired.length > 0 && <ul>{hired.map((h) => <AgentNode key={h.id} agent={h} />)}</ul>}
+                        {head && <AgentNode agent={head} working={working.has(head.id)}>
+                          {hired.length > 0 && <ul>{hired.map((h) => <AgentNode key={h.id} agent={h} working={working.has(h.id)} />)}</ul>}
                         </AgentNode>}
                       </ul>
                     </li>

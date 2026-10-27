@@ -9,9 +9,9 @@ export default function WorkForm() {
     if (!text.trim()) return setState({ busy: false, error: 'Describe the work first.', ok: '' })
     setState({ busy: true, error: '', ok: '' })
     try {
-      await api.submitWork(text.trim())
+      const wr = await api.submitWork(text.trim())
       setText('')
-      setState({ busy: false, error: '', ok: 'Sent to the Chief. Status: Received.' })
+      setState({ busy: false, error: '', ok: wr?.hint || 'Sent to the Chief. Status: Received.' })
     } catch (err) { setState({ busy: false, error: err.message, ok: '' }) }
   }
   return (

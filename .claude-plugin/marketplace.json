@@ -10,8 +10,8 @@
     {
       "name": "flight-safety-agents",
       "source": "./",
-      "description": "Audit, SMS and FDM agents sharing one manual knowledge base, working together in a single chat.",
-      "version": "0.4.0"
+      "description": "Flight-safety department agents (Audit, SMS, FDM, and your own) sharing one manual knowledge base, plus Flight Safety Command: a Chief of Flight Safety, Vertical Heads who hire specialists, and a live dashboard, all running as subagents inside Claude Code.",
+      "version": "0.5.0"
     }
   ]
 }
