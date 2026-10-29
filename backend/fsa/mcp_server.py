@@ -114,9 +114,14 @@ TOOLS = [
                        "section, page, file and a snippet. Defaults to your own department (the Chief: all).",
      obj({"activation": ACT, "query": S, "dept": {"type": "string", "description": "Department id (optional)"},
           "top": {"type": "integer", "description": "Max results, 1-20 (default 8)"}}, ["activation", "query"])),
-    ("read_section", "Agent: read a manual section or saved output file (a `file` from search_manuals or a path "
-                     "from save_output).",
-     obj({"activation": ACT, "file": S}, ["activation", "file"])),
+    ("read_section", "Agent: read part of a manual or saved output file (a `file` from search_manuals or a path "
+                     "from save_output). Pass the result's `line` to read just that part (about 4,000 characters "
+                     "from that line on). Without `line` you get the first 16,000 characters. When `truncated` is "
+                     "true, pass `next_line` as `line` to carry on.",
+     obj({"activation": ACT, "file": S,
+          "line": {"type": "integer", "description": "Line from search_manuals (or next_line): read from here"},
+          "chars": {"type": "integer", "description": "How much to read, 500-40000 (default 4000 with line, else 16000)"}},
+         ["activation", "file"])),
     ("save_output", "Agent: save a report or other longer result as markdown for a task (or, for the Chief, a work "
                     "request id). Returns the file path to put in your task note.",
      obj({"activation": ACT, "task_id": S, "title": S, "content": {"type": "string", "description": "Markdown"}},
@@ -242,8 +247,8 @@ class Company:
     def search_manuals(self, activation, query, dept=None, top=8):
         return self.office.tool_search(activation, query, dept or None, top)
 
-    def read_section(self, activation, file):
-        return self.office.tool_read(activation, file)
+    def read_section(self, activation, file, line=None, chars=None):
+        return self.office.tool_read(activation, file, line, chars)
 
     def save_output(self, activation, task_id, title, content):
         return self.office.tool_save_output(activation, task_id, title, content)

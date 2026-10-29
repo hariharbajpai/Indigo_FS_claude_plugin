@@ -21,7 +21,7 @@ A department can hold any number of documents (manual, SOPs, checklists, forms, 
 
 ### 1. Look at what you were given
 
-Collect every file the user supplied (a path, several paths, or uploaded files; in claude.ai look under `/mnt/user-data/uploads`). For each, read the title page / first pages and note title, revision or amendment, effective date. See what is already stored: `kb.py status` (shows each document's id, revision and source file).
+Collect every file the user supplied (a path, several paths, or uploaded files; in claude.ai look under `/mnt/user-data/uploads`). **Do not open the files yourself yet**: step 2 reads title, revision and effective date from the first pages of each file, so with 100 files you spend no tokens on covers. See what is already stored: `kb.py status` (shows each document's id, revision and source file).
 
 ### 2. Check every file against the KB (always, even for one file)
 
@@ -38,7 +38,9 @@ It compares each file by content hash and by name (revision numbers, dates, "FIN
 | **ASK THE USER** | looks like a version of an existing document | **ask: update the existing document, or add as a new, separate one?** |
 | **OLD REVISION** | identical to an already superseded revision | warn that ingesting would roll back; ask what they want |
 
-Names can mislead, so also use what you read in step 1: if the title or document number clearly says it is the same document (or clearly a different one), say so when you ask or when you override a weak match. If `match` says NEW but the content is plainly a new issue of a stored document (renamed file), treat it as an update candidate and ask.
+For every NEW or ASK file `match` also prints what it read from the first pages, for example `read from the file: title "Safety Management Manual" (cover) · rev "Rev 05" (cover) · effective 2026-02-14 · 312 pages`. These are suggestions: put them in the plan table for the user to confirm. Open a file yourself only for a field shown as `not found` or `unclear`, or when a value looks wrong. A `WARNING … scanned` means the PDF has no text layer: OCR it first, do not ingest it as is. `--json` gives the same under `detected`.
+
+Names can mislead, so also use what `match` read: if the title or document number clearly says it is the same document (or clearly a different one), say so when you ask or when you override a weak match. If `match` says NEW but the content is plainly a new issue of a stored document (renamed file), treat it as an update candidate and ask.
 
 ### 3. One plan, one set of questions
 
@@ -52,7 +54,7 @@ Show a short table for all files, then ask everything in one message, only about
 | SMS_Manual_R05.pdf | DUPLICATE of the current SMS Manual; skipping |
 ```
 
-Also settle, per file, anything you could not read from the document: department (`audit`, `sms`, `fdm`, `shared`, a custom one), revision, effective date. Do not ask what you can read yourself; do not ask twice.
+Also settle, per file, anything `match` could not read: department (`audit`, `sms`, `fdm`, `shared`, a custom one), revision, effective date. Do not ask what `match` already read (just ask the user to confirm it); do not ask twice.
 
 ### 4. Ingest
 
@@ -78,7 +80,7 @@ python3 <skill>/scripts/kb.py ingest "<file>" --replace sms-manual --rev "Rev 6"
 
 ### 6. Check the result; do not trust conversion blindly
 
-Read each new `_doc.md` contents list. Open one or two chunk files and compare against the source: headings split sensibly, tables readable, page numbers plausible. If the script warns about few headings or a scanned PDF, say so and offer a fix (OCR with `ocrmypdf`, `--layout`, splitting the document).
+`ingest` prints chunks, headings detected, characters and any WARNING; with no warning, trust it. When there is a warning, or for the first file of a new kind of layout, open its `_doc.md` contents list and one or two chunk files and compare against the source: headings split sensibly, tables readable, page numbers plausible. In a big batch spot-check about one file in ten, not all. If the script warns about few headings or a scanned PDF, say so and offer a fix (OCR with `ocrmypdf`, `--layout`, splitting the document).
 
 ### 7. Report briefly
 
@@ -94,7 +96,8 @@ python3 <skill>/scripts/kb.py search "unstable approach criteria" --dept fdm --d
 
 - Search your own department and `shared` first. Search other departments only to cross-reference.
 - Try two or three phrasings (abbreviation and long form: "SPI" / "safety performance indicator").
-- Snippets are only pointers. Open the chunk file at the reported line and read the surrounding text before you quote or rely on a requirement.
+- Snippets are only pointers. Before you quote or rely on a requirement, read the text at the reported line: about 40-60 lines from `file:line` (Read tool with offset and limit), not the whole chunk file. In the dashboard tools that is `read_section` with the result's `line`.
+- Search is fast: the first search after an ingest or an edit refreshes a saved index (`safety-kb/_index/search.db`), later ones take milliseconds even over thousands of pages. `kb.py reindex` rebuilds it; deleting `_index/` is always safe (search then scans the files, slower).
 - **Cite every claim that comes from a manual** as `[<Document> <Revision> §<section>, p.<page>]`. Conventions and the shared answer format: `references/conventions.md`.
 - Superseded revisions are hidden by default. Use `--include-superseded` only when the user asks about history or a past event.
 - **Nothing found means say so:** "not found in the KB". You may add general industry knowledge, but label it "general knowledge, not from your manuals" and never present it as company policy.

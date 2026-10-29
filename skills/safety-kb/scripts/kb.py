@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """safety-kb: turn manuals into a sectioned markdown knowledge base, and search it.
 
-  kb.py match  FILE...             is each file new, a duplicate, or a new version of a document already there?
+  kb.py match  FILE... [--no-detect]  is each file new, a duplicate, or a new version of a document already there?
+                                   Also reads title, revision and date from the first pages.
   kb.py ingest FILE --dept DEPT [--title T] [--doc-id ID] [--rev R] [--effective YYYY-MM-DD]
                     [--force] [--layout] [--max-chars N]
   kb.py ingest FILE --replace DOC_ID --rev R      update an existing document (old revision archived)
   kb.py retire DOC_ID [--dept D] [--reason ...]   withdraw a document from search (kept, never deleted)
   kb.py search QUERY [--dept D ...] [--doc ID] [--top N] [--include-superseded] [--json]
   kb.py index                      rebuild INDEX.md files
+  kb.py reindex                    rebuild the saved search index (<kb>/_index/search.db; a cache, safe to delete)
   kb.py status                     show what the KB holds
 
   kb.py board post|inbox|answer|close|show|pending   messages between departments (_team/board.jsonl)
@@ -33,6 +35,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -448,6 +451,7 @@ def ingest(a: argparse.Namespace) -> None:
         f"Department: {dept}\n\n## Contents\n\n" + "\n".join(toc) + "\n", encoding="utf-8")
 
     rebuild_index(kb)
+    update_index(kb)
     print(f"ingested  {title}  →  {d.relative_to(kb.parent) if kb.parent in d.parents else d}")
     print(f"  chunks: {len(chunks)} · headings detected: {n_headings} · characters: {total_chars:,}"
           + (f" · pages: {last_page}" if last_page else ""))
@@ -529,61 +533,227 @@ def tokens(s: str) -> list[str]:
     return [stem(w) for w in re.findall(r"[a-z0-9]+", s.lower()) if w not in STOP and len(w) > 1]
 
 
+def chunk_files(kb: Path):
+    """Every chunk file that can be searched: (path, department folder, is_superseded)."""
+    if not kb.is_dir():
+        return
+    for dp in sorted(p for p in kb.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))):
+        for md in sorted(dp.rglob("*.md")):
+            parts = md.relative_to(dp).parts
+            if md.name in ("_doc.md", "INDEX.md") or len(parts) < 2:
+                continue
+            sup = parts[0] == "_superseded"
+            if parts[0].startswith("_") and not sup:
+                continue
+            yield md, dp.name, sup
+
+
+def file_blocks(md: Path, sup: bool) -> tuple[dict, list[dict]]:
+    """Split one chunk file into search blocks of about 400-1200 characters.
+    `line`/`end` are 1-based line numbers of the whole file (front matter included)."""
+    text = md.read_text(encoding="utf-8")
+    meta, body = fm_load(text)
+    offset = len(text[: len(text) - len(body)].splitlines())
+    blocks: list[dict] = []
+    page, heading = meta.get("page_start"), meta.get("section", "")
+    cur: list[str] = []
+    chars = 0
+    start_line = end_line = 0
+    start_page, start_head = page, heading
+
+    def flush() -> None:
+        nonlocal cur, chars
+        if cur and "".join(cur).strip():
+            blocks.append({"line": start_line, "end": end_line, "page": start_page, "section": start_head,
+                           "text": "\n".join(cur).strip()})
+        cur, chars = [], 0
+
+    for i, line in enumerate(body.splitlines(), start=offset + 1):
+        m = PAGE_RE.match(line)
+        if m:
+            page = int(m.group(1))
+            continue
+        h = HEAD_RE.match(line)
+        if h:
+            flush()
+            heading = h.group(2)
+        if not cur:
+            start_line, start_page, start_head = i, page, heading
+        cur.append(line)
+        end_line = i
+        chars += len(line) + 1
+        if (not line.strip() and chars >= 400) or chars >= 1200:
+            flush()
+    flush()
+    return meta, blocks
+
+
 def iter_blocks(kb: Path, depts: list[str] | None, doc: str | None, include_sup: bool):
-    for md in sorted(kb.rglob("*.md")):
-        parts = md.relative_to(kb).parts
-        if md.name in ("_doc.md", "INDEX.md") or len(parts) < 3 or parts[0].startswith(("_", ".")):
+    """Every block of every searchable file, read from disk (used when there is no saved index)."""
+    for md, dept, sup in chunk_files(kb):
+        if (sup and not include_sup) or (depts and dept not in depts):
             continue
-        sup = parts[1] == "_superseded"
-        if parts[1].startswith("_") and not sup:
-            continue
-        if sup and not include_sup:
-            continue
-        if depts and parts[0] not in depts:
-            continue
-        text = md.read_text(encoding="utf-8")
-        meta, body = fm_load(text)
+        meta, blocks = file_blocks(md, sup)
         if doc and doc not in meta.get("doc_id", ""):
             continue
-        offset = text[: len(text) - len(body)].count("\n")
-        page, heading = meta.get("page_start"), meta.get("section", "")
-        cur: list[str] = []
-        start_line, start_page, start_head, chars = 0, page, heading, 0
-
-        def emit():
-            if cur and "".join(cur).strip():
-                yield {"path": md, "line": start_line, "page": start_page, "section": start_head,
-                       "meta": meta, "text": "\n".join(cur).strip(), "superseded": sup}
-
-        for i, line in enumerate(body.splitlines(), start=offset + 1):
-            m = PAGE_RE.match(line)
-            if m:
-                page = int(m.group(1))
-                continue
-            h = HEAD_RE.match(line)
-            if h:
-                yield from emit()
-                cur, chars = [], 0
-                heading = h.group(2)
-            if not cur:
-                start_line, start_page, start_head = i, page, heading
-            cur.append(line)
-            chars += len(line) + 1
-            if (not line.strip() and chars >= 400) or chars >= 1200:
-                yield from emit()
-                cur, chars = [], 0
-        yield from emit()
+        for b in blocks:
+            yield {**b, "path": md, "meta": meta, "superseded": sup}
 
 
-def search(a: argparse.Namespace) -> None:
-    kb = kb_root(a.kb)
-    q = tokens(a.query)
-    if not q:
-        die("query has no searchable words.")
+# --------------------------------------------------------------------------- saved search index
+# A cache of the chunk files, kept in <kb>/_index/search.db (SQLite FTS5, BM25). It stores only stemmed words and
+# where each block sits, never the text itself. Files are re-indexed when their size or time changes, so ingest,
+# retire and hand edits are all picked up. Safe to delete at any time; without SQLite/FTS5 search scans the files.
+
+INDEX_SCHEMA = 1
+POOL_PER_RESULT = 8  # the index returns this many candidates per wanted result; they are re-ranked below
+
+
+def open_index(kb: Path):
+    """Open the saved index (creating it if needed). None when it cannot be used: then search scans the files."""
+    if os.environ.get("SAFETY_KB_NO_INDEX") or not kb.is_dir():
+        return None
+    try:
+        import sqlite3
+        path = kb / "_index" / "search.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path), timeout=60, isolation_level=None)
+        if conn.execute("PRAGMA user_version").fetchone()[0] != INDEX_SCHEMA:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if conn.execute("PRAGMA user_version").fetchone()[0] != INDEX_SCHEMA:
+                    for t in ("fts", "blocks", "files"):
+                        conn.execute(f"DROP TABLE IF EXISTS {t}")
+                    conn.execute("CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT UNIQUE, mtime_ns INTEGER, size INTEGER, "
+                                 "dept TEXT, mdept TEXT, doc_id TEXT, doc TEXT, revision TEXT, effective TEXT, sup INTEGER)")
+                    conn.execute("CREATE TABLE blocks(id INTEGER PRIMARY KEY, file_id INTEGER, line_start INTEGER, "
+                                 "line_end INTEGER, page INTEGER, section TEXT)")
+                    conn.execute("CREATE INDEX blocks_file ON blocks(file_id)")
+                    conn.execute("CREATE VIRTUAL TABLE fts USING fts5(body, section, tokenize='unicode61')")
+                    conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA}")
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        return conn
+    except Exception:  # no sqlite3 / FTS5, read-only folder, locked for too long: fall back to scanning
+        return None
+
+
+def refresh_index(kb: Path, conn) -> tuple[int, int]:
+    """Bring the index in line with the chunk files on disk. Returns (files indexed, blocks indexed)."""
+    disk = {}
+    for md, dept, sup in chunk_files(kb):
+        st = md.stat()  # taken before the file is read: a later change makes the next refresh redo it
+        disk[md.relative_to(kb).as_posix()] = (st.st_mtime_ns, st.st_size, md, dept, sup)
+
+    def diff() -> tuple[list[int], list[str]]:
+        known = {p: (fid, mt, sz) for fid, p, mt, sz in conn.execute("SELECT id, path, mtime_ns, size FROM files")}
+        todo = [p for p, d in disk.items() if p not in known or known[p][1:] != d[:2]]
+        drop = [v[0] for p, v in known.items() if p not in disk] + [known[p][0] for p in todo if p in known]
+        return drop, todo
+
+    drop, todo = diff()
+    if not drop and not todo:
+        return 0, 0
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        drop, todo = diff()  # another process may have done this while we waited for the lock
+        for fid in drop:
+            conn.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM blocks WHERE file_id = ?)", (fid,))
+            conn.execute("DELETE FROM blocks WHERE file_id = ?", (fid,))
+            conn.execute("DELETE FROM files WHERE id = ?", (fid,))
+        next_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM blocks").fetchone()[0] + 1
+        n_files = n_blocks = 0
+        for p in todo:
+            mtime, size, md, dept, sup = disk[p]
+            try:
+                meta, blocks = file_blocks(md, sup)
+            except (OSError, UnicodeDecodeError):
+                continue  # vanished or unreadable meanwhile; the next refresh looks again
+            fid = conn.execute(
+                "INSERT INTO files(path, mtime_ns, size, dept, mdept, doc_id, doc, revision, effective, sup) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (p, mtime, size, dept, meta.get("dept") or dept, meta.get("doc_id", ""), meta.get("doc", ""),
+                 meta.get("revision", ""), meta.get("effective", ""), int(sup))).lastrowid
+            ids = range(next_id, next_id + len(blocks))
+            conn.executemany("INSERT INTO blocks(id, file_id, line_start, line_end, page, section) VALUES (?,?,?,?,?,?)",
+                             [(i, fid, b["line"], b["end"], b["page"], b["section"]) for i, b in zip(ids, blocks)])
+            conn.executemany("INSERT INTO fts(rowid, body, section) VALUES (?,?,?)",
+                             [(i, " ".join(tokens(b["text"])), " ".join(tokens(b["section"]))) for i, b in zip(ids, blocks)])
+            next_id += len(blocks)
+            n_files, n_blocks = n_files + 1, n_blocks + len(blocks)
+        conn.execute("COMMIT")
+        return n_files, n_blocks
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def update_index(kb: Path) -> None:
+    """Right after the KB changes (ingest, retire), so the next search does not have to. Best effort."""
+    conn = open_index(kb)
+    if conn is None:
+        return
+    try:
+        refresh_index(kb, conn)
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def block_text(lines: list[str], line: int, end: int) -> str:
+    return "\n".join(l for l in lines[line - 1:end] if not PAGE_RE.match(l)).strip()
+
+
+def search_index(conn, kb: Path, q: list[str], a: argparse.Namespace):
+    """Returns (ranked candidates, whether there was anything to search). Candidates are the same dicts search_scan makes."""
+    filt, args = "", []
+    if not a.include_superseded:
+        filt += " AND f.sup = 0"
+    if a.dept:
+        filt += f" AND f.dept IN ({','.join('?' * len(a.dept))})"
+        args += list(a.dept)
+    if a.doc:
+        filt += " AND instr(f.doc_id, ?) > 0"
+        args.append(a.doc)
+    match = " OR ".join(f'"{t}"' for t in dict.fromkeys(q))
+    rows = conn.execute(
+        "SELECT b.line_start, b.line_end, b.page, b.section, f.path, f.mdept, f.doc_id, f.doc, f.revision, f.effective, f.sup, "
+        "bm25(fts, 1.0, 2.0) AS s FROM fts JOIN blocks b ON b.id = fts.rowid JOIN files f ON f.id = b.file_id "
+        f"WHERE fts MATCH ?{filt} ORDER BY s LIMIT ?", [match, *args, max(a.top * POOL_PER_RESULT, 60)]).fetchall()
+    if not rows:
+        any_block = conn.execute(f"SELECT 1 FROM blocks b JOIN files f ON f.id = b.file_id WHERE 1=1{filt} LIMIT 1", args).fetchone()
+        return [], any_block is not None
+    qset, phrase = set(q), a.query.lower().strip()
+    files: dict[str, list[str]] = {}
+    scored = []
+    for l0, l1, page, section, path, mdept, doc_id, doc, rev, eff, sup, bm in rows:
+        try:
+            if path not in files:
+                files[path] = (kb / path).read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        text = block_text(files[path], l0, l1)
+        hit = qset & (set(tokens(text)) | set(tokens(section)))
+        if not hit:
+            continue
+        s = -bm * (0.5 + 0.5 * len(hit) / len(qset))
+        if len(q) > 1 and phrase in text.lower():
+            s *= 1.5
+        scored.append((s, {"path": kb / path, "line": l0, "page": page, "section": section, "text": text, "superseded": bool(sup),
+                           "meta": {"dept": mdept, "doc": doc, "doc_id": doc_id, "revision": rev, "effective": eff}}))
+    scored.sort(key=lambda x: -x[0])
+    return scored, True
+
+
+def search_scan(kb: Path, q: list[str], a: argparse.Namespace):
+    """The original search: read and score every block of every file. Slow on a big KB; used without an index."""
     qset = set(q)
     blocks = list(iter_blocks(kb, a.dept, a.doc, a.include_superseded))
     if not blocks:
-        die(f"nothing to search in {kb} (check --dept / --doc, or ingest a manual first).")
+        return [], False
     for b in blocks:
         b["tf"] = Counter(tokens(b["text"]) + tokens(b["section"]) * 2)
         b["dl"] = sum(b["tf"].values()) or 1
@@ -609,6 +779,29 @@ def search(a: argparse.Namespace) -> None:
             s *= 1.5
         scored.append((s, b))
     scored.sort(key=lambda x: -x[0])
+    return scored, True
+
+
+def search(a: argparse.Namespace) -> None:
+    kb = kb_root(a.kb)
+    q = tokens(a.query)
+    if not q:
+        die("query has no searchable words.")
+    found = None
+    conn = open_index(kb)
+    if conn is not None:
+        try:
+            refresh_index(kb, conn)
+            found = search_index(conn, kb, q, a)
+        except Exception:  # an index problem must never cost the user a search
+            found = None
+        finally:
+            conn.close()
+    if found is None:
+        found = search_scan(kb, q, a)
+    scored, searched = found
+    if not searched:
+        die(f"nothing to search in {kb} (check --dept / --doc, or ingest a manual first).")
     results = []
     for s, b in scored[: a.top]:
         flat = re.sub(r"\s+", " ", b["text"])
@@ -631,6 +824,24 @@ def search(a: argparse.Namespace) -> None:
         print(f"[{i}] {r['dept'].upper()} · {r['doc']} · rev {r['revision']} · §{r['section']} · {page}  (score {r['score']}){flag}")
         print(f"    {r['file']}:{r['line']}")
         print(f"    …{r['snippet']}…\n")
+
+
+def reindex_cmd(a: argparse.Namespace) -> None:
+    """Throw the saved search index away and build it again from the chunk files."""
+    kb = kb_root(a.kb)
+    if not kb.is_dir():
+        die(f"no knowledge base at {kb}.")
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        (kb / "_index" / f"search.db{suffix}").unlink(missing_ok=True)
+    conn = open_index(kb)
+    if conn is None:
+        die("SQLite with FTS5 is not available here, so there is no saved index; search scans the files instead.")
+    try:
+        t0 = time.time()
+        files, blocks = refresh_index(kb, conn)
+    finally:
+        conn.close()
+    print(f"indexed {files} file(s), {blocks} block(s) in {time.time() - t0:.1f}s → {kb / '_index' / 'search.db'}")
 
 
 # --------------------------------------------------------------------------- matching, replacing, retiring
@@ -674,6 +885,151 @@ def name_sim(a: frozenset[str], b: frozenset[str]) -> float:
     return 1.0 if a == b else len(a & b) / len(a | b)
 
 
+# --------------------------------------------------------------------------- reading the cover page
+
+COVER_PAGES = 3  # how many pages of a file are looked at to find its title, revision and date
+_TITLE_WORDS = re.compile(r"(?i)\b(manual|handbook|procedures?|policy|policies|programme|program|standard|guide(?:lines?)?|"
+                          r"regulations?|requirements|checklist|sop|plan|instruction|circular|directive|specification)\b")
+_NOT_TITLE = re.compile(r"(?i)\b(revision|rev\.?|issue|amendment|amdt|edition|version|effective|page\s+\d|uncontrolled|controlled copy)\b")
+_REV_WORD = r"(?i:\b(revision|rev|issue|amendment|amdt|edition|version)\b)\.?"
+_REV_VALUE = r"(\d{1,3}(?:\.\d{1,2})?[A-Za-z]?\b|[IVX]{2,5}\b|[A-Z]\b(?![ \t]+[a-z]))"
+_REV_RE = re.compile(_REV_WORD + r"[ \t]*(?i:(?:no\.?|number|nr\.?)?)[ \t]*[:#\-]?[ \t]*" + _REV_VALUE)
+_REV_FILE_RE = re.compile(r"(?i)(?:^|[\s_\-.(])(rev(?:ision)?|issue|amdt|amendment|v|r)[\s_\-]*0*(\d{1,3})(?=$|[\s_\-.)])")
+_REV_LABEL = {"revision": "Rev", "rev": "Rev", "issue": "Issue", "amendment": "Amdt", "amdt": "Amdt", "edition": "Edition",
+              "version": "Version", "v": "Version", "r": "Rev"}
+_MONTHS = {m: i for i, m in enumerate("jan feb mar apr may jun jul aug sep oct nov dec".split(), 1)}
+_DATE_VALUE = (r"(\d{4}-\d{2}-\d{2}|\d{1,2}[ \t./-]+[A-Za-z]{3,9}\.?[ \t,./-]+\d{4}|"
+               r"[A-Za-z]{3,9}\.?[ \t]+\d{1,2}(?:st|nd|rd|th)?,?[ \t]+\d{4}|\d{1,2}[./-]\d{1,2}[./-]\d{4})")
+_DATE_STRONG = re.compile(r"(?i:effective(?:\s+date)?|date\s+of\s+(?:issue|effect)|issue\s+date|issued|revision\s+date)[ \t]*[:\-–]?[ \t]*" + _DATE_VALUE)
+_DATE_WEAK = re.compile(r"(?i:\bdate)[ \t]*[:\-–][ \t]*" + _DATE_VALUE)
+
+
+def parse_date(raw: str) -> str | None:
+    """An ISO date from the forms found on covers. A numeric 03/04/2026 that could be day-first or month-first gives None."""
+    raw = raw.strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            return dt.date.fromisoformat(raw).isoformat()
+        m = re.fullmatch(r"(\d{1,2})[ \t./-]+([A-Za-z]{3,9})\.?[ \t,./-]+(\d{4})", raw)
+        if m and m.group(2)[:3].lower() in _MONTHS:
+            return dt.date(int(m.group(3)), _MONTHS[m.group(2)[:3].lower()], int(m.group(1))).isoformat()
+        m = re.fullmatch(r"([A-Za-z]{3,9})\.?[ \t]+(\d{1,2})(?:st|nd|rd|th)?,?[ \t]+(\d{4})", raw)
+        if m and m.group(1)[:3].lower() in _MONTHS:
+            return dt.date(int(m.group(3)), _MONTHS[m.group(1)[:3].lower()], int(m.group(2))).isoformat()
+        m = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})", raw)
+        if m:
+            a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if a > 12 >= b:
+                return dt.date(y, b, a).isoformat()
+            if b > 12 >= a:
+                return dt.date(y, a, b).isoformat()
+    except ValueError:
+        pass
+    return None
+
+
+def peek_pages(path: Path) -> tuple[list[str], int | None]:
+    """The first COVER_PAGES pages of a file as text, and its page count when known. Never converts the whole file."""
+    ext = path.suffix.lower()
+    if ext == ".pdf":
+        try:
+            import pypdf  # type: ignore
+            r = pypdf.PdfReader(str(path))
+            return [(r.pages[i].extract_text() or "") for i in range(min(COVER_PAGES, len(r.pages)))], len(r.pages)
+        except ImportError:
+            pass
+        try:
+            import fitz  # type: ignore
+            with fitz.open(str(path)) as d:
+                return [d[i].get_text() for i in range(min(COVER_PAGES, len(d)))], len(d)
+        except ImportError:
+            pass
+        exe = shutil.which("pdftotext")
+        if not exe:
+            raise RuntimeError("no PDF backend")
+        out = subprocess.run([exe, "-f", "1", "-l", str(COVER_PAGES), str(path), "-"], capture_output=True, text=True,
+                             timeout=60, check=True).stdout
+        n = None
+        info = shutil.which("pdfinfo")
+        if info:
+            m = re.search(r"^Pages:\s+(\d+)", subprocess.run([info, str(path)], capture_output=True, text=True, timeout=30).stdout, re.M)
+            n = int(m.group(1)) if m else None
+        return out.split("\f")[:COVER_PAGES], n
+    if ext == ".docx":
+        return [docx_to_md(path)[:6000]], None
+    if ext in (".md", ".markdown", ".txt"):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return [f.read(6000)], None
+    return [], None
+
+
+def detect_meta(path: Path) -> dict:
+    """What the first pages say about the file: title, revision, effective date, page count; and what could not be read.
+    These are suggestions to confirm with the user, not facts."""
+    d: dict = {"title": None, "title_source": None, "revision": None, "revision_source": None, "effective": None,
+               "effective_raw": None, "pages": None, "scanned": False, "warnings": []}
+    try:
+        pages, d["pages"] = peek_pages(path)
+    except (Exception, SystemExit) as e:  # bad, encrypted or truncated file; the real error shows at ingest
+        d["warnings"].append(f"could not read the first pages ({type(e).__name__})")
+        pages = []
+    if path.suffix.lower() == ".pdf" and pages and sum(len(p.strip()) for p in pages) < 80:
+        d["scanned"] = True
+        d["warnings"].append("the first pages have almost no text: probably a scanned PDF. OCR it first (ocrmypdf in.pdf out.pdf)")
+    # title: the first cover line that names a kind of document; else the file name
+    first = [l.strip().lstrip("#").strip() for l in (pages[0] if pages else "").splitlines() if l.strip()][:25]
+    for l in first:
+        if 6 <= len(l) <= 100 and len(l.split()) <= 12 and not l.endswith(".") and _TITLE_WORDS.search(l) and not _NOT_TITLE.search(l):
+            d["title"], d["title_source"] = (l.title() if l.isupper() else l).rstrip(" .:;-"), "cover"
+            break
+    else:
+        d["title"], d["title_source"] = re.sub(r"[_\-]+", " ", path.stem).strip(), "file name"
+    # revision: cover first, then the next pages, then the file name
+    for i, text in enumerate(pages):
+        m = _REV_RE.search(text)
+        if m:
+            d["revision"] = f"{_REV_LABEL[m.group(1).lower()]} {m.group(2)}"
+            d["revision_source"] = "cover" if i == 0 else f"page {i + 1}"
+            break
+    else:
+        m = _REV_FILE_RE.search(path.stem)
+        if m:
+            d["revision"], d["revision_source"] = f"{_REV_LABEL[m.group(1).lower()]} {int(m.group(2))}", "file name"
+    # effective date: labelled dates first; a bare "Date:" only if nothing better
+    for rx in (_DATE_STRONG, _DATE_WEAK):
+        for text in pages:
+            for m in rx.finditer(text):
+                iso = parse_date(m.group(1))
+                if iso or d["effective_raw"] is None:
+                    d["effective_raw"] = m.group(1).strip()
+                if iso:
+                    d["effective"] = iso
+                    break
+            if d["effective"]:
+                break
+        if d["effective"]:
+            break
+    return d
+
+
+def detected_line(d: dict) -> str:
+    def f(v, src=None):
+        return "not found" if not v else (f'"{v}"' + (f" ({src})" if src else ""))
+    eff = d["effective"] or (f'unclear "{d["effective_raw"]}"' if d["effective_raw"] else "not found")
+    return (f"read from the file: title {f(d['title'], d['title_source'])} · rev {f(d['revision'], d['revision_source'])} · "
+            f"effective {eff}" + (f" · {d['pages']} pages" if d["pages"] else ""))
+
+
+
+def print_detected(r: dict) -> None:
+    d = r.get("detected")
+    if not d:
+        return
+    print("    " + detected_line(d))
+    for w in d["warnings"]:
+        print(f"    WARNING: {w}")
+
+
 def match_cmd(a: argparse.Namespace) -> None:
     """Before ingesting: is each file new, a duplicate, or probably a new version of something already there?"""
     kb = kb_root(a.kb)
@@ -708,11 +1064,14 @@ def match_cmd(a: argparse.Namespace) -> None:
                 cands.append((best, d, m))
         cands.sort(key=lambda x: -x[0])
         if cands:
-            report.append({"file": f, "action": "ask_update_or_new",
-                           "candidates": [{"similarity": round(s, 2), "dept": d, "doc_id": m.get("doc_id"), "doc": m.get("doc"),
-                                           "revision": m.get("revision"), "source_file": m.get("source_file")} for s, d, m in cands[:3]]})
+            entry = {"file": f, "action": "ask_update_or_new",
+                     "candidates": [{"similarity": round(s, 2), "dept": d, "doc_id": m.get("doc_id"), "doc": m.get("doc"),
+                                     "revision": m.get("revision"), "source_file": m.get("source_file")} for s, d, m in cands[:3]]}
         else:
-            report.append({"file": f, "action": "new", "note": "no existing document looks like this one"})
+            entry = {"file": f, "action": "new", "note": "no existing document looks like this one"}
+        if a.detect:
+            entry["detected"] = detect_meta(p)
+        report.append(entry)
     if a.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return
@@ -720,6 +1079,7 @@ def match_cmd(a: argparse.Namespace) -> None:
         print(f"[{i}] {Path(r['file']).name}")
         if r["action"] == "new":
             print("    NEW: nothing in the KB looks like it. Add as a new document.")
+            print_detected(r)
         elif r["action"] == "skip_duplicate":
             print(f"    DUPLICATE of {r['dept']}/{r['doc_id']} (rev {r['revision']}): {r['note']}")
         elif r["action"] == "ask_old_revision":
@@ -730,6 +1090,7 @@ def match_cmd(a: argparse.Namespace) -> None:
                 print(f"      · {c['dept']}/{c['doc_id']}  \"{c['doc']}\"  current rev {c['revision']}  (from {c['source_file']}, similarity {c['similarity']})")
             print(f"      update: ingest \"{r['file']}\" --replace <doc_id> --rev \"<new revision>\"")
             print(f"      new:    ingest \"{r['file']}\" --dept <dept> --doc-id <new-id> --title \"<title>\" --rev \"<revision>\"")
+            print_detected(r)
         else:
             print(f"    ERROR: {r['note']}")
 
@@ -751,6 +1112,7 @@ def retire_cmd(a: argparse.Namespace) -> None:
     (arch / "_doc.md").write_text(fm_dump(m) + body, encoding="utf-8")
     stale = mark_memory_stale(kb, a.doc_id, str(meta.get("revision", "")))
     rebuild_index(kb)
+    update_index(kb)
     print(f"withdrew {dept}/{a.doc_id} (rev {meta.get('revision')}); kept in {arch.relative_to(kb)}, no longer searched")
     if stale:
         print(f"  {stale} memory note(s) relied on it and are now flagged 'verify before use'.")
@@ -1075,6 +1437,8 @@ def main() -> None:
     p = sub.add_parser("match", parents=[common], help="check files against the KB: new, duplicate, or a new version of something there?")
     p.add_argument("files", nargs="+")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--no-detect", dest="detect", action="store_false",
+                   help="do not read title, revision and date from the first pages")
     p.set_defaults(fn=match_cmd)
 
     p = sub.add_parser("retire", parents=[common], help="withdraw a document from search (kept on disk, never deleted)")
@@ -1091,6 +1455,9 @@ def main() -> None:
     p.add_argument("--include-superseded", action="store_true")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=search)
+
+    p = sub.add_parser("reindex", parents=[common], help="rebuild the saved search index from the chunk files")
+    p.set_defaults(fn=reindex_cmd)
 
     p = sub.add_parser("index", parents=[common], help="rebuild INDEX.md files")
     p.set_defaults(fn=lambda a: (rebuild_index(kb_root(a.kb)), print("index rebuilt")))

@@ -302,9 +302,9 @@ class Office:
             depts = [agent["dept"], "shared"]
         return {"results": self.kb.search(query, depts, min(max(int(top or 8), 1), 20))}
 
-    def tool_read(self, aid, file):
+    def tool_read(self, aid, file, line=None, chars=None):
         self.require(aid)
-        return self.kb.read_file(file)
+        return self.kb.read_file(file, line, chars)
 
     def tool_save_output(self, aid, task_id, title, content):
         act, agent = self.require(aid)
@@ -396,9 +396,11 @@ class Office:
         out += ["## Team", "- The Owner: the flight-safety manager, the only human. Speaks English or Hinglish."]
         out += self._team_lines()
         out += ["", "## Knowledge base (the department manuals)",
-                "search_manuals finds sections (department, document, revision, section, page, file); read_section "
-                "reads a whole section file. Work from what the manuals say, cite document, section and page, and "
-                "say so plainly when the manuals do not cover something. Never invent manual content.",
+                "search_manuals finds sections (department, document, revision, section, page, file, line); read_section "
+                "with that file and line reads just that part (about 4,000 characters). Do not read whole files: "
+                "search first, read the lines you need, and carry on from next_line only if the text is cut off. "
+                "Work from what the manuals say, cite document, section and page, and say so plainly when the "
+                "manuals do not cover something. Never invent manual content.",
                 "save_output saves a report or other longer result as markdown and returns its path; put that path "
                 "in your task note. build_file makes a real PowerPoint (pptx), Word (docx) or Excel (xlsx) file "
                 "from structured content when the Owner wants one."]

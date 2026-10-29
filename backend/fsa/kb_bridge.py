@@ -20,6 +20,29 @@ import tempfile
 from . import paths
 from .store import Invalid
 
+DEFAULT_READ_CHARS = 16000   # a whole file read: a few thousand tokens at most
+DEFAULT_WINDOW_CHARS = 4000  # a read around a line from search_manuals: about a thousand tokens
+MAX_READ_CHARS = 40000
+_PAGE_LINE = re.compile(r"^<!-- page (\d+) -->$")
+_HEAD_LINE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
+
+
+def _front_matter(lines):
+    """(metadata of a chunk file's front matter, number of front-matter lines)."""
+    if not lines or lines[0] != "---":
+        return {}, 0
+    for i in range(1, min(len(lines), 40)):
+        if lines[i] == "---":
+            meta = {}
+            for text in lines[1:i]:
+                k, _, v = text.partition(":")
+                try:
+                    meta[k.strip()] = json.loads(v.strip())
+                except ValueError:
+                    meta[k.strip()] = v.strip()
+            return meta, i + 1
+    return {}, 0
+
 
 class KbBridge:
     def __init__(self, root=None, kb_script=None):
@@ -84,7 +107,7 @@ class KbBridge:
 
     # ---- match ----
     def _match_raw(self, paths):
-        r = self.run("match", "--json", *paths)
+        r = self.run("match", "--json", "--no-detect", *paths)
         try:
             return json.loads(r.stdout)
         except ValueError:
@@ -174,8 +197,15 @@ class KbBridge:
             rows = json.loads(r.stdout or "[]")
         except ValueError:
             return []
-        keep = ("score", "dept", "doc", "doc_id", "revision", "effective", "section", "page", "file", "snippet")
-        return [{k: x.get(k) for k in keep} for x in rows]
+        keep = ("score", "dept", "doc", "doc_id", "revision", "effective", "section", "page", "file", "line", "snippet")
+        base, out = os.path.realpath(self.root), []
+        for x in rows:
+            row = {k: x.get(k) for k in keep}
+            rel = os.path.relpath(row["file"], base) if row.get("file") else ""
+            if rel and not rel.startswith(".."):
+                row["file"] = rel  # shorter than the absolute path; read_section accepts it
+            out.append(row)
+        return out
 
     def inside(self, path):
         full = os.path.realpath(path if os.path.isabs(path) else os.path.join(self.root, path))
@@ -184,13 +214,53 @@ class KbBridge:
             raise Invalid("That file is not in the knowledge base")
         return full
 
-    def read_file(self, path, limit=40000):
+    def read_file(self, path, line=None, chars=None):
+        """Read part of a KB file. With `line` (from search_manuals): about DEFAULT_WINDOW_CHARS characters from that
+        line on. Without: the first DEFAULT_READ_CHARS characters. Cuts fall on line boundaries; `next_line` says where
+        to carry on (pass it as `line`). Never more than MAX_READ_CHARS."""
         full = self.inside(path)
         if not os.path.isfile(full):
             raise Invalid(f"No such file in the knowledge base: {path}")
         with open(full, encoding="utf-8", errors="replace") as f:
-            text = f.read()
-        return {"file": full, "text": text[:limit], "truncated": len(text) > limit}
+            lines = f.read().splitlines()
+        total = len(lines)
+        try:
+            line = int(line) if line else None
+            chars = int(chars) if chars else None
+        except (TypeError, ValueError):
+            raise Invalid("line and chars must be whole numbers")
+        budget = max(500, min(chars, MAX_READ_CHARS)) if chars else (DEFAULT_WINDOW_CHARS if line else DEFAULT_READ_CHARS)
+        meta, body_from = _front_matter(lines)
+        start = 1
+        used = 0
+        if line:
+            start = min(max(line, 1), max(total, 1))
+        out, end, cut = [], start - 1, False
+        for i in range(start, total + 1):
+            text = lines[i - 1]
+            if len(text) > MAX_READ_CHARS:
+                text, cut = text[:MAX_READ_CHARS], True
+            if out and used + len(text) + 1 > budget:
+                break
+            out.append(text)
+            used += len(text) + 1
+            end = i
+        res = {"file": full, "text": "\n".join(out), "truncated": end < total or cut,
+               "from_line": start, "to_line": end, "total_lines": total}
+        if end < total:
+            res["next_line"] = end + 1
+        if start > 1:  # the front matter is not in the text, so say which document, section and page this is
+            page, section = meta.get("page_start"), meta.get("section")
+            for text in lines[body_from:start]:
+                m = _PAGE_LINE.match(text)
+                if m:
+                    page = int(m.group(1))
+                h = _HEAD_LINE.match(text)
+                if h:
+                    section = h.group(1)
+            ctx = {"doc": meta.get("doc"), "revision": meta.get("revision"), "section": section, "page": page}
+            res["context"] = {k: v for k, v in ctx.items() if v not in (None, "")}
+        return res
 
     def save_output(self, folder, name, content):
         if not (content or "").strip():

@@ -148,10 +148,11 @@ The same tool the skills use:
 
 ```bash
 python3 skills/safety-kb/scripts/kb.py ingest manual.pdf --dept sms --title "SMS Manual" --rev "Rev 05" --effective 2026-03-01
-python3 skills/safety-kb/scripts/kb.py match a.pdf b.docx c.pdf          # new, duplicate, or a new version of something stored?
+python3 skills/safety-kb/scripts/kb.py match a.pdf b.docx c.pdf          # new, duplicate, or a new version of something stored? Also reads title, revision and date from each cover
 python3 skills/safety-kb/scripts/kb.py ingest new_issue.pdf --replace sms-manual --rev "Rev 6"
 python3 skills/safety-kb/scripts/kb.py retire hazard-register-sop --reason "superseded by company SOP"
 python3 skills/safety-kb/scripts/kb.py search "risk assessment matrix" --dept sms --dept shared
+python3 skills/safety-kb/scripts/kb.py reindex                           # rebuild the saved search index (a cache in safety-kb/_index/; searches take milliseconds)
 python3 skills/safety-kb/scripts/kb.py status
 python3 skills/safety-kb/scripts/kb.py board show --open      # what departments are asking each other
 python3 skills/safety-kb/scripts/kb.py mem show               # what each department has learned
@@ -174,7 +175,7 @@ Manuals, FDM data and reports are confidential. `.gitignore` excludes `safety-kb
 - **Memory is only as good as what gets recorded.** Agents are told to record sparingly and with sources; review it now and then.
 - The department skills are frameworks. They do not contain your regulations or procedures, only how to work with them. Quality depends on the documents you ingest.
 
-## Flight Safety Command (v0.8.0): a Chief, Vertical Heads and a live dashboard, inside Claude Code
+## Flight Safety Command (v0.9.0): a Chief, Vertical Heads and a live dashboard, inside Claude Code
 
 Flight Safety Command runs a small flight-safety organisation as **subagents in your Claude Code session** (desktop app, IDE or terminal), on your own login. No API key, no terminal, nothing to install beyond the plugin.
 
@@ -226,6 +227,8 @@ A dark, gold-accented control room with a left sidebar (it becomes a top bar on 
 The dashboard server binds to 127.0.0.1 only, accepts only local Host headers and needs the token from the `/start` link for every API call.
 
 ### Where things live
+**Big knowledge bases stay cheap and fast.** Search uses a saved SQLite index (`safety-kb/_index/search.db`, kept up to date by ingest, retire and edits), so a search over thousands of pages takes milliseconds instead of rescanning every file. Agents read only what they need: `search_manuals` returns the `line` of each hit and `read_section` with that line returns about 4,000 characters from there (and `next_line` to carry on), instead of a whole section file.
+
 Everything is in the project's `./safety-kb/` (git-ignored; set `SAFETY_KB_DIR` or `FSA_KB_ROOT` to move it): department manuals as markdown (`<department>/`), agent outputs and PPT/Word/Excel files (`_outputs/<WR>/`), and the team database and dashboard state (`_team/fsa.db`, `_team/dashboard.json`, `_team/dashboard.log`). The same knowledge base serves the Audit, SMS and FDM skills above.
 
 ### Requirements

@@ -1,5 +1,6 @@
 """End-to-end tests for kb.py. Run:  python3 -m unittest discover -s tests -v"""
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -19,9 +20,9 @@ except ImportError:
     pass
 
 
-def kb(tmp: Path, *args, check=True):
+def kb(tmp: Path, *args, check=True, env=None):
     r = subprocess.run([sys.executable, "-I", str(KB_PY), *args, "--kb", str(tmp / "safety-kb")],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env={**os.environ, **env} if env else None)
     if check and r.returncode:
         raise AssertionError(f"kb.py {args} failed:\n{r.stdout}\n{r.stderr}")
     return r
@@ -302,6 +303,155 @@ class MemoryTests(unittest.TestCase):
             self.assertEqual(p.returncode, 0)
         rows = json.loads(kb(self.tmp, "mem", "show", "--dept", "fdm", "--json").stdout)
         self.assertEqual(len(rows), 10)
+
+
+NO_INDEX = {"SAFETY_KB_NO_INDEX": "1"}
+
+
+class IndexTests(unittest.TestCase):
+    """The saved search index (<kb>/_index/search.db): same answers as scanning the files, but it follows every change."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.f = fixtures.make_md(self.tmp / "sms.md")
+        kb(self.tmp, "ingest", str(self.f), "--dept", "sms", "--title", "SMS Manual", "--rev", "Rev 1")
+        self.root = self.tmp / "safety-kb"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def search(self, query, *extra, env=None):
+        return json.loads(kb(self.tmp, "search", query, "--json", *extra, env=env).stdout)
+
+    def test_ingest_builds_the_index_and_it_gives_the_same_answers_as_a_scan(self):
+        self.assertTrue((self.root / "_index" / "search.db").exists())
+        for q in ("risk index intolerable Accountable Manager", "submit a safety report within hours",
+                  "unstable approach rate per 1000 flights", "management of change"):
+            fast, slow = self.search(q), self.search(q, env=NO_INDEX)
+            self.assertTrue(fast, q)
+            key = lambda h: (h["file"], h["line"], h["section"], h["page"], h["revision"])  # noqa: E731
+            self.assertEqual(key(fast[0]), key(slow[0]), q)
+            self.assertEqual({key(h) for h in fast[:3]}, {key(h) for h in slow[:3]}, q)
+
+    def test_scan_fallback_creates_no_index(self):
+        shutil.rmtree(self.root / "_index")
+        self.assertTrue(self.search("risk matrix", env=NO_INDEX))
+        self.assertFalse((self.root / "_index").exists())
+
+    def test_edits_are_picked_up_without_reindexing(self):
+        self.assertTrue(self.search("submit report 24 hours"))
+        chunk = next(self.root.glob("sms/sms-manual/*reporting*.md"), None) or next(
+            c for c in sorted(self.root.glob("sms/sms-manual/0*.md")) if "24 hours" in c.read_text())
+        chunk.write_text(chunk.read_text().replace("24 hours", "twelve hours"))  # a different size, so the index notices
+        hit = self.search("submit a safety report within twelve hours")[0]
+        self.assertIn("twelve hours", hit["snippet"])
+
+    def test_second_document_and_retire_are_followed(self):
+        other = self.tmp / "audit.md"
+        other.write_text("# Audit Handbook\n\n## 1 Scope\n\nThe quokka audit programme covers every base annually.\n")
+        kb(self.tmp, "ingest", str(other), "--dept", "audit", "--title", "Audit Handbook", "--rev", "1")
+        self.assertEqual(self.search("quokka audit programme")[0]["dept"], "audit")
+        kb(self.tmp, "retire", "audit-handbook", "--reason", "test")
+        gone = kb(self.tmp, "search", "quokka audit programme", "--dept", "audit", "--json", check=False)
+        self.assertIn("nothing to search", gone.stderr)  # nothing left in the audit department...
+        self.assertFalse([h for h in self.search("quokka audit programme") if "quokka" in h["snippet"]])  # ...nothing of it is left
+        self.assertTrue(self.search("risk matrix"))  # the other department is untouched
+        old = self.search("quokka audit programme", "--include-superseded")
+        self.assertTrue(old and old[0]["superseded"])
+
+    def test_replace_hides_the_old_revision(self):
+        new = self.tmp / "sms6.md"
+        new.write_text(self.f.read_text().replace("within 24 hours", "within 6 hours"))
+        kb(self.tmp, "ingest", str(new), "--replace", "sms-manual", "--rev", "Rev 2")
+        hit = self.search("submit a safety report within hours")[0]
+        self.assertIn("6 hours", hit["snippet"])
+        self.assertEqual(hit["revision"], "Rev 2")
+        both = self.search("submit a safety report within hours", "--include-superseded")
+        self.assertEqual({h["revision"] for h in both}, {"Rev 1", "Rev 2"})
+
+    def test_filters_work_through_the_index(self):
+        self.assertTrue(self.search("risk matrix", "--dept", "sms"))
+        self.assertTrue(self.search("risk matrix", "--doc", "sms-man"))
+        miss = kb(self.tmp, "search", "risk matrix", "--dept", "fdm", "--json", check=False)
+        self.assertIn("nothing to search", miss.stderr)
+
+    def test_reindex_and_a_deleted_index_are_both_fine(self):
+        self.assertIn("indexed", kb(self.tmp, "reindex").stdout)
+        shutil.rmtree(self.root / "_index")
+        self.assertTrue(self.search("risk matrix"))
+        self.assertTrue((self.root / "_index" / "search.db").exists())
+
+    def test_a_broken_index_never_breaks_search(self):
+        (self.root / "_index" / "search.db").write_bytes(b"this is not a database")
+        self.assertTrue(self.search("risk matrix"))
+
+
+class DetectTests(unittest.TestCase):
+    """match reads title, revision and date from the first pages, so nobody has to open every file."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def detect(self, name, text):
+        f = self.tmp / name
+        f.write_text(text)
+        return json.loads(kb(self.tmp, "match", str(f), "--json").stdout)[0]["detected"]
+
+    def test_cover_page(self):
+        d = self.detect("manual.md", "Sample Airline\n\nSAFETY MANAGEMENT MANUAL\n\nRevision 05\nEffective date: 14 February 2026\n"
+                                     "\n# Chapter 1\nIssue of reports and version control come later.\n")
+        self.assertEqual((d["title"], d["title_source"]), ("Safety Management Manual", "cover"))
+        self.assertEqual((d["revision"], d["revision_source"]), ("Rev 05", "cover"))
+        self.assertEqual(d["effective"], "2026-02-14")
+
+    def test_iso_date_and_issue_number(self):
+        d = self.detect("x.md", "Hazard Register Procedure\nIssue 2 - Date of issue: 2026-03-01\n")
+        self.assertEqual((d["title"], d["revision"], d["effective"]), ("Hazard Register Procedure", "Issue 2", "2026-03-01"))
+
+    def test_ambiguous_numeric_date_is_not_guessed(self):
+        d = self.detect("x.md", "Flight Data Monitoring Procedure\nAmendment 3\nEffective: 03/04/2026\n")
+        self.assertIsNone(d["effective"])
+        self.assertEqual(d["effective_raw"], "03/04/2026")
+        d = self.detect("y.md", "Flight Data Monitoring Procedure\nEffective: 25/04/2026\n")
+        self.assertEqual(d["effective"], "2026-04-25")
+
+    def test_no_cover_means_not_found_not_a_wrong_guess(self):
+        d = self.detect("plain_notes.txt", "Some notes.\nRevenue grew. Issued a statement. Version of the plan is unclear.\n")
+        self.assertIsNone(d["revision"])
+        self.assertIsNone(d["effective"])
+        self.assertEqual((d["title"], d["title_source"]), ("plain notes", "file name"))
+
+    def test_revision_falls_back_to_the_file_name(self):
+        d = self.detect("SMS_Manual_R06.md", "Some text without a cover.\n")
+        self.assertEqual((d["revision"], d["revision_source"]), ("Rev 6", "file name"))
+
+    @unittest.skipUnless(HAVE_PDF, "no PDF backend installed")
+    def test_pdf_reads_only_the_first_pages(self):
+        f = fixtures.make_pdf(self.tmp / "sms.pdf")
+        d = json.loads(kb(self.tmp, "match", str(f), "--json").stdout)[0]["detected"]
+        self.assertEqual(d["revision"], "Rev 2")
+        self.assertFalse(d["scanned"])
+
+    def test_text_output_and_switches(self):
+        f = self.tmp / "m.md"
+        f.write_text("Audit Handbook\nRevision 3\n")
+        out = kb(self.tmp, "match", str(f)).stdout
+        self.assertIn('read from the file: title "Audit Handbook" (cover) · rev "Rev 3" (cover)', out)
+        raw = json.loads(kb(self.tmp, "match", str(f), "--json", "--no-detect").stdout)[0]
+        self.assertNotIn("detected", raw)
+
+    def test_duplicates_are_not_read(self):
+        f = fixtures.make_md(self.tmp / "sms.md")
+        kb(self.tmp, "ingest", str(f), "--dept", "sms", "--title", "SMS Manual", "--rev", "1")
+        dup = self.tmp / "same.md"
+        shutil.copy(f, dup)
+        rep = json.loads(kb(self.tmp, "match", str(dup), "--json").stdout)[0]
+        self.assertEqual(rep["action"], "skip_duplicate")
+        self.assertNotIn("detected", rep)
+
 
 
 if __name__ == "__main__":
