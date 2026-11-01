@@ -101,6 +101,18 @@ class PluginTests(unittest.TestCase):
             self.assertIn("session_model", body)  # which Claude is in use is reported by the work loop
             self.assertIn("`model`", body)  # and each activation's model is passed on to the Agent call
 
+    def test_update_command_only_updates(self):
+        fm, body = frontmatter(os.path.join(REPO, "skills", "update", "SKILL.md"))
+        self.assertEqual(fm["name"], "update")
+        allowed = [t.strip() for t in fm["allowed-tools"].split(",")]
+        ok = ("Bash(claude plugin marketplace update flight-safety-agents",
+              "Bash(claude plugin update flight-safety-agents@flight-safety-agents", "Bash(claude plugin list")
+        for t in allowed:
+            self.assertTrue(t.startswith(ok), t)  # no uninstall, remove or other shell commands
+        self.assertIn("claude plugin marketplace update flight-safety-agents", body)
+        self.assertIn("claude plugin update flight-safety-agents@flight-safety-agents", body)
+        self.assertIn("/reload-plugins", body)
+
     def test_ui_is_bundled(self):
         web = os.path.join(REPO, "backend", "fsa", "web")
         self.assertTrue(os.path.isfile(os.path.join(web, "index.html")))

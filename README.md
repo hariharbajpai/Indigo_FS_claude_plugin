@@ -48,7 +48,27 @@ A team of flight-safety department agents (**Audit, SMS, FDM**, plus any departm
 
 The same from a normal terminal: `claude plugin marketplace add hariharbajpai/Indigo_FS_claude_plugin` then `claude plugin install flight-safety-agents@flight-safety-agents`. Both forms also accept a local folder path in place of `<user>/<repo>`, which is handy for testing before you push.
 
-Restart or reload, then type `/` and look for the `safety-kb`, `safety-team`, `sms-dept`, `audit-dept`, `fdm-dept` and `safety-add-department` skills, and the Flight Safety Command commands (`start`, `add-dept`, `work`, `tell`, `run`, `status`, `stop`). Plugin skills are namespaced, so they may show as `flight-safety-agents:safety-team`. The agents are listed under `/agents`.
+Restart or reload, then type `/` and look for the `safety-kb`, `safety-team`, `sms-dept`, `audit-dept`, `fdm-dept` and `safety-add-department` skills, and the Flight Safety Command commands (`start`, `add-dept`, `work`, `tell`, `run`, `status`, `stop`, `update`). Plugin skills are namespaced, so they may show as `flight-safety-agents:safety-team`. The agents are listed under `/agents`.
+
+### Update
+
+Plugins from a GitHub marketplace don't update on their own. When a new version is out, type this in Claude Code:
+
+```
+/flight-safety-agents:update
+```
+
+It refreshes the marketplace and updates the plugin. Run `/reload-plugins` or start a new session to use the new version; the dashboard switches over the next time `/flight-safety-agents:start` runs.
+
+On v0.10.0 or older, which don't have that command yet, paste this into the Claude Code prompt box once (or run the two commands in a terminal):
+
+```
+Run `claude plugin marketplace update flight-safety-agents` and then `claude plugin update flight-safety-agents@flight-safety-agents`
+```
+
+To get new versions automatically instead, run `/plugin` in a terminal session, open **Marketplaces**, select `flight-safety-agents` and choose **Enable auto-update**.
+
+**Publishing a new version:** raise `version` in `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `backend/fsa/__init__.py` and `frontend/package.json` (a test checks they match), then push to `main`. Claude Code only offers an update when this number changes.
 
 Check a clone of the repo before publishing: `claude plugin validate .`
 
@@ -177,7 +197,7 @@ Manuals, FDM data and reports are confidential. `.gitignore` excludes `safety-kb
 - **Memory is only as good as what gets recorded.** Agents are told to record sparingly and with sources; review it now and then.
 - The department skills are frameworks. They do not contain your regulations or procedures, only how to work with them. Quality depends on the documents you ingest.
 
-## Flight Safety Command (v0.10.0): a Chief, a File Checker, Vertical Heads and a live dashboard, inside Claude Code
+## Flight Safety Command (v0.11.0): a Chief, a File Checker, Vertical Heads and a live dashboard, inside Claude Code
 
 Flight Safety Command runs a small flight-safety organisation as **subagents in your Claude Code session** (desktop app, IDE or terminal), on your own login. No API key, no terminal, nothing to install beyond the plugin.
 
@@ -205,6 +225,7 @@ Owner (you) ──work / instructions──▶ Dhruv Rebbapragada, Chief of Flig
 | `/flight-safety-agents:rename Dhruv Rebbapragada -> Arjun Mehta` | Renames anyone: the Chief, a Vertical Head, a hired specialist, or a department (by current name, a unique part of it, an id like `ag-2`, or `chief`). Also from the dashboard's Org Chart (Rename buttons). |
 | `/flight-safety-agents:model [recommended \| best \| economy \| inherit \| opus \| sonnet \| haiku \| chief=opus head=sonnet]` | Shows which Claude (Opus, Sonnet, Haiku) the session and each kind of agent use, and upgrades or lightens it. Also in the dashboard's Overview. |
 | `/flight-safety-agents:status`, `/flight-safety-agents:stop` | Status in chat (it lists the Claude models in use); stop the dashboard server. |
+| `/flight-safety-agents:update` | Updates the plugin to the latest version from GitHub. Run `/reload-plugins` or start a new session afterwards. |
 
 ### How a request flows
 1. You send work. The **Chief** (`agents/chief-of-flight-safety.md`) searches what each department's manuals cover and writes the **brief**: summary, goals and tasks, each owned by one department. If no department fits, he asks which one to add and creates no tasks.
@@ -277,7 +298,7 @@ skills/
   safety-team/         coordinator
   sms-dept/  audit-dept/  fdm-dept/
   safety-add-department/   + assets/ templates
-  start/ add-dept/ work/ tell/ run/ status/ stop/ rename/ model/   Flight Safety Command commands
+  start/ add-dept/ work/ tell/ run/ status/ stop/ rename/ model/ update/   Flight Safety Command commands
 agents/                sms-agent, audit-agent, fdm-agent; chief-of-flight-safety, file-checker, vertical-head, dept-specialist
 .mcp.json              the Flight Safety Command MCP server (python3 backend/mcp_main.py)
 backend/               Flight Safety Command (standard library): store, workflow, work loop, MCP server,
