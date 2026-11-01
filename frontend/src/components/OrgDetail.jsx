@@ -5,6 +5,7 @@ import Avatar from './Avatar.jsx'
 import RenameButton from './RenameButton.jsx'
 import { Icon } from './Icons.jsx'
 import { NAME as STATUS } from '../views/TaskBoard.jsx'
+import { clip, isCut, shortRole } from '../roles.js'
 
 const KIND = { chief: 'Chief', checker: 'File Checker', head: 'Vertical Head', hired: 'Specialist' }
 const CAP = 5 // people per department, Vertical Head included
@@ -89,6 +90,20 @@ function FilesBuilt({ files }) {
   )
 }
 
+// The full role and hire note, closed by default: the card itself shows only their short forms.
+function FullText({ role, roleShort, reason, reasonShort }) {
+  const longRole = Boolean(role) && isCut(role, roleShort)
+  const longReason = Boolean(reason) && isCut(reason, reasonShort)
+  if (!longRole && !longReason) return null
+  return (
+    <details className="od-more">
+      <summary>{longRole && longReason ? 'Full role and hire note' : longRole ? 'Full role' : 'Full hire note'}</summary>
+      {longRole && <p className="od-text">{role}</p>}
+      {longReason && <><h3 className="od-label">Hired for</h3><p className="od-text">{reason}</p></>}
+    </details>
+  )
+}
+
 function about(kind, dept, head) {
   if (kind === 'chief') return 'Reads every work request, writes the brief, picks the departments and merges their answers into one report for you.'
   if (kind === 'checker') return 'Reads the manuals once for every task and hands the department a source pack: document, revision, section and page. Every task passes here first.'
@@ -107,6 +122,9 @@ function PersonCard({ node, data, working, onSelect }) {
   const open = mine.filter((t) => t.status !== 'done')
   const files = data.files.filter((f) => f.created_by === a.id)
   const team = kind === 'head' ? data.agents.filter((x) => x.dept_id === dept?.id && x.id !== a.id) : []
+  const roleShort = shortRole(a.role, 90)
+  const reason = kind === 'hired' ? a.hire_reason : ''
+  const reasonShort = clip(reason, 160)
 
   return (
     <>
@@ -114,7 +132,7 @@ function PersonCard({ node, data, working, onSelect }) {
         <Avatar name={a.name} kind={kind} size="lg" />
         <div>
           <h2 id="od-title">{a.name}</h2>
-          <div className="muted small">{a.role}</div>
+          <div className="muted small">{roleShort || KIND[kind]}</div>
         </div>
       </div>
       <div className="od-pills">
@@ -125,7 +143,7 @@ function PersonCard({ node, data, working, onSelect }) {
       </div>
       <p className="od-about">{about(kind, dept, head)}</p>
 
-      {kind === 'hired' && a.hire_reason && <Section label="Hired for"><p className="od-text">{a.hire_reason}</p></Section>}
+      {reasonShort && <Section label="Hired for"><p className="od-text">{reasonShort}</p></Section>}
 
       {kind !== 'chief' && (
         <Section label="Reports to">
@@ -179,10 +197,12 @@ function PersonCard({ node, data, working, onSelect }) {
 
       {kind !== 'checker' && <Section label="Files built"><FilesBuilt files={files} /></Section>}
 
+      <FullText role={a.role} roleShort={roleShort} reason={reason} reasonShort={reasonShort} />
+
       {a.created_at && <p className="muted tiny-text od-foot">Joined {date(a.created_at)}</p>}
       {!retired && a.id && (
         <div className="od-actions">
-          <RenameButton current={a.name} label={a.role}
+          <RenameButton current={a.name} label={`${KIND[kind]} ${a.name}`}
             onSave={async (name) => { await api.renameAgent(a.id, name); await refresh() }} />
         </div>
       )}

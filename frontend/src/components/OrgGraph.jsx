@@ -2,13 +2,24 @@ import { useEffect, useMemo, useRef } from 'react'
 import { layoutOrg, pathTo, edgePath, RADIUS, SLOT } from '../orgLayout.js'
 import { initials } from './Avatar.jsx'
 import { Icon } from './Icons.jsx'
+import { shortRole } from '../roles.js'
 
 const KIND = { chief: 'Chief', checker: 'File Checker', dept: 'Department', head: 'Vertical Head', hired: 'Specialist' }
 
 export const nodeName = (n) => (n.kind === 'dept' ? n.dept.name : n.agent?.name || '')
 const isRetired = (n) => (n.kind === 'dept' ? n.dept.status : n.agent?.status) === 'retired'
 
-// The organisation as a graph: every node shows only a name. Clicking one calls onSelect(node id).
+// One short line under the name: the title part of the role, or how many people a department has.
+function nodeDesc(n, agents) {
+  if (n.kind !== 'dept') return shortRole(n.agent?.role, 48) || KIND[n.kind]
+  if (isRetired(n)) return 'Retired'
+  const head = agents.find((a) => a.id === n.dept.head_id)
+  const count = (head && head.status !== 'retired' ? 1 : 0)
+    + agents.filter((a) => a.dept_id === n.dept.id && a.id !== n.dept.head_id && a.status !== 'retired').length
+  return `${count} ${count === 1 ? 'person' : 'people'}`
+}
+
+// The organisation as a graph: every node shows a name and one short line. Clicking one calls onSelect(node id).
 export default function OrgGraph({ chief, checker, departments, agents, working, selected, onSelect }) {
   const { nodes, edges, width, height } = useMemo(
     () => layoutOrg({ chief, checker, departments, agents }),
@@ -49,18 +60,22 @@ export default function OrgGraph({ chief, checker, departments, agents, working,
         {nodes.map((n) => {
           const r = RADIUS[n.kind]
           const name = nodeName(n)
+          const desc = nodeDesc(n, agents)
           const on = selected === n.id
           const cls = ['gnode', n.kind, busy(n) ? 'working' : '', isRetired(n) ? 'retired' : '', on ? 'selected' : '',
             lit.has(n.id) && !on ? 'trail' : ''].filter(Boolean).join(' ')
           return (
             <button key={n.id} type="button" data-node={n.id} className={cls} aria-pressed={on}
               aria-label={`${name}, ${KIND[n.kind]}${isRetired(n) ? ', retired' : ''}${busy(n) ? ', working now' : ''}`}
-              title={name} onClick={() => onSelect(on ? null : n.id)}
+              title={desc ? `${name} · ${desc}` : name} onClick={() => onSelect(on ? null : n.id)}
               style={{ left: n.x - SLOT / 2, top: n.y - r, width: SLOT, '--r': `${r}px` }}>
               <span className="gnode-dot">
                 {n.kind === 'dept' ? <Icon name="building" /> : n.kind === 'checker' ? <Icon name="file" /> : initials(name)}
               </span>
-              <span className="gnode-name">{name}</span>
+              <span className="gnode-text">
+                <span className="gnode-name">{name}</span>
+                {desc && <span className="gnode-desc">{desc}</span>}
+              </span>
             </button>
           )
         })}

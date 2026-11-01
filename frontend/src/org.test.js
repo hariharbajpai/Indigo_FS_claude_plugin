@@ -5,6 +5,32 @@ import { layoutOrg, pathTo, SLOT } from './orgLayout.js'
 import { LiveContext } from './useLive.js'
 import { api } from './api.js'
 import OrgChart from './views/OrgChart.jsx'
+import { clip, shortRole } from './roles.js'
+
+globalThis.CSS ??= { escape: (s) => String(s) } // jsdom has no CSS.escape; closing a card uses it
+
+const CHIEF_ROLE = 'Chief of Flight Safety (FSM Issue 5 Rev 0 §2.3.1, pp41-42). RACI from FSM Issue 5 Rev 0 §2.3.1: '
+  + 'A (accountable): effective implementation and application of the SMS in all IndiGo departments.'
+const FACT_CHECKER = 'Independent fact-checker (C), Safety. Checks every Safety department output against the Safety library.'
+
+describe('short role', () => {
+  it('keeps the title and drops manual references and the rest', () => {
+    expect(shortRole(CHIEF_ROLE)).toBe('Chief of Flight Safety')
+    expect(shortRole(FACT_CHECKER)).toBe('Independent fact-checker, Safety')
+    expect(shortRole('Associate Director (Emergency Response & Cabin Safety), ag-4 — leads ERM drills'))
+      .toBe('Associate Director (Emergency Response & Cabin Safety), ag-4')
+    expect(shortRole('Vertical Head')).toBe('Vertical Head')
+    expect(shortRole('')).toBe('')
+  })
+
+  it('cuts a long title at a word, with an ellipsis', () => {
+    const s = shortRole('Senior specialist for hydraulic, pneumatic and landing gear repeat defect trend analysis across the fleet', 48)
+    expect(s.length).toBeLessThanOrEqual(48)
+    expect(s.endsWith('…')).toBe(true)
+    expect(s).not.toMatch(/\s…$/)
+    expect(clip('short', 10)).toBe('short')
+  })
+})
 
 const REASON = 'TK-1 needs someone to read the hydraulic incident logs against the AMM Rev 12 and list every repeat defect.'
 const chief = { id: 'chief', name: 'Dhruv Rebbapragada', role: 'Chief of Flight Safety', kind: 'chief', status: 'active' }
@@ -78,6 +104,25 @@ describe('organisation page', () => {
 
     fireEvent.keyDown(window, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('shows a short line under each name and keeps the long role out of sight', () => {
+    vi.spyOn(api, 'departmentDocuments').mockResolvedValue({ documents: [] })
+    const long = { ...agents[4], role: `${FACT_CHECKER} ${'Checks every Safety department output. '.repeat(8)}` }
+    render(createElement(LiveContext.Provider, { value: { data: { ...data, agents: agents.map((a) => (a.id === long.id ? long : a)) }, refresh: async () => {} } },
+      createElement(OrgChart)))
+    const graph = screen.getByRole('group', { name: 'Organisation chart' })
+    expect(within(graph).getByText('Independent fact-checker, Safety')).toBeTruthy()
+    expect(within(graph).getAllByText('Vertical Head', { selector: '.gnode-desc' })).toHaveLength(2)
+    expect(within(graph).getByText('3 people')).toBeTruthy()
+    expect(within(graph).queryByText(/Checks every/)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /Hydraulics Analyst, Specialist/ }))
+    const card = screen.getByRole('dialog')
+    expect(within(card).getByText('Independent fact-checker, Safety')).toBeTruthy()
+    const more = card.querySelector('details.od-more')
+    expect(more.open).toBe(false)
+    expect(within(more).getByText('Full role')).toBeTruthy()
   })
 
   it('opens a department card with its people and manuals', async () => {

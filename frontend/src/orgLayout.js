@@ -1,8 +1,8 @@
 // Where each node of the organisation graph sits: the Chief on top, then the File Checker,
 // the departments, their Vertical Heads and the specialists they hired. Pure, so it is easy to test.
 export const SLOT = 118 // width given to one node and its name
-export const ROW = 132 // distance between rows
-export const LABEL = 36 // room for a two-line name under a node
+export const ROW = 156 // distance between rows
+export const LABEL = 64 // room under a node for a two-line name and a two-line short description
 export const PAD = 40
 export const RADIUS = { chief: 30, checker: 24, dept: 26, head: 23, hired: 19 }
 const GAP = 0.4 // space between departments, in slots

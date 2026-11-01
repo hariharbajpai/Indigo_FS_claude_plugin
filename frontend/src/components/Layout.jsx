@@ -2,6 +2,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useStore } from '../useLive.js'
 import { BrandMark, Icon } from './Icons.jsx'
 import Avatar from './Avatar.jsx'
+import { shortRole } from '../roles.js'
 
 export const PAGES = [
   { to: '/', icon: 'overview', label: 'Overview', eyebrow: 'Command centre', title: 'Overview', sub: 'Work requests, briefs, files and who is working right now.' },
@@ -53,7 +54,7 @@ export default function Layout() {
           {chief && (
             <div className="chief-chip">
               <Avatar name={chief.name} kind="chief" size="sm" />
-              <div className="who"><strong>{chief.name}</strong><span className="muted tiny-text">{chief.role}</span></div>
+              <div className="who"><strong>{chief.name}</strong><span className="muted tiny-text">{shortRole(chief.role, 40) || 'Chief of Flight Safety'}</span></div>
             </div>
           )}
         </div>
