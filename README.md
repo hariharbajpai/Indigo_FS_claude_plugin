@@ -156,6 +156,8 @@ python3 skills/safety-kb/scripts/kb.py reindex                           # rebui
 python3 skills/safety-kb/scripts/kb.py status
 python3 skills/safety-kb/scripts/kb.py board show --open      # what departments are asking each other
 python3 skills/safety-kb/scripts/kb.py mem show               # what each department has learned
+python3 skills/safety-kb/scripts/kb.py links find --dept sms --learn --text "unstable approach rate at Delhi"   # only what the words trigger, in other departments too
+python3 skills/safety-kb/scripts/kb.py links show             # the word -> department links learned so far
 ```
 
 KB location: `--kb DIR`, else `$SAFETY_KB_DIR`, else `./safety-kb`.
@@ -175,13 +177,16 @@ Manuals, FDM data and reports are confidential. `.gitignore` excludes `safety-kb
 - **Memory is only as good as what gets recorded.** Agents are told to record sparingly and with sources; review it now and then.
 - The department skills are frameworks. They do not contain your regulations or procedures, only how to work with them. Quality depends on the documents you ingest.
 
-## Flight Safety Command (v0.9.0): a Chief, Vertical Heads and a live dashboard, inside Claude Code
+## Flight Safety Command (v0.10.0): a Chief, a File Checker, Vertical Heads and a live dashboard, inside Claude Code
 
 Flight Safety Command runs a small flight-safety organisation as **subagents in your Claude Code session** (desktop app, IDE or terminal), on your own login. No API key, no terminal, nothing to install beyond the plugin.
 
 ```
 Owner (you) ──work / instructions──▶ Dhruv Rebbapragada, Chief of Flight Safety
                                          │ brief (versioned) + tasks, one department each
+                                         ▼
+                                    File Checker (Documentation Controller): reads the manuals once per task,
+                                         │ hands each department a source pack (exact document, revision, section, page)
                        ┌─────────────────┼─────────────────┐
                  Vertical Head      Vertical Head     Vertical Head      (one per department: its PDFs + Head name)
                        │ does the task, or hires specialists (max 5 active agents per department)
@@ -198,13 +203,25 @@ Owner (you) ──work / instructions──▶ Dhruv Rebbapragada, Chief of Flig
 | `/flight-safety-agents:tell [@dept-id] <instruction>` | Steers mid-way (to the Chief, or one department) or answers the Chief's question. The Chief re-plans: new brief version, conflicting tasks blocked, new tasks added. |
 | `/flight-safety-agents:run` | Runs waiting work, for example after you sent work or an instruction from the dashboard. |
 | `/flight-safety-agents:rename Dhruv Rebbapragada -> Arjun Mehta` | Renames anyone: the Chief, a Vertical Head, a hired specialist, or a department (by current name, a unique part of it, an id like `ag-2`, or `chief`). Also from the dashboard's Org Chart (Rename buttons). |
-| `/flight-safety-agents:status`, `/flight-safety-agents:stop` | Status in chat; stop the dashboard server. |
+| `/flight-safety-agents:model [recommended \| best \| economy \| inherit \| opus \| sonnet \| haiku \| chief=opus head=sonnet]` | Shows which Claude (Opus, Sonnet, Haiku) the session and each kind of agent use, and upgrades or lightens it. Also in the dashboard's Overview. |
+| `/flight-safety-agents:status`, `/flight-safety-agents:stop` | Status in chat (it lists the Claude models in use); stop the dashboard server. |
 
 ### How a request flows
 1. You send work. The **Chief** (`agents/chief-of-flight-safety.md`) searches what each department's manuals cover and writes the **brief**: summary, goals and tasks, each owned by one department. If no department fits, he asks which one to add and creates no tasks.
-2. Each **Vertical Head** (`agents/vertical-head.md`) gets its tasks. It does them from its department's manuals, or **hires** a specialist (`agents/dept-specialist.md`) for a task. Every hire, and every refusal at the cap, is logged.
-3. Agents work only from the uploaded manuals (`search_manuals`, `read_section`), cite document, section and page, save results with `save_output` (`safety-kb/_outputs/<WR>/<task>.md`) and move tasks through `todo → in_progress → done` (or `blocked`), always with a note.
-4. When the last task is done the Chief reads the notes and outputs, builds any file you asked for, and sends you a **completion report** that lists every file with its full path.
+2. The **File Checker** (`agents/file-checker.md`) takes every new task **before its department starts**. It searches the manuals (the task's department, `shared`, and any other department the task's words point at), picks the 3 to 6 sections that answer the task and checks them: current revision, sections that disagree, parts the manuals do not cover. The system itself reads each section **once** and stores it in the task's **source pack** with its exact document, revision, section and page (a copy is saved under `_outputs/<WR>/<task>-source-pack.md`). Only then does the department start. If the File Checker delivers nothing it is asked again, and after two tries the departments start without a pack (flagged), so work never stalls.
+3. Each **Vertical Head** (`agents/vertical-head.md`) gets its tasks together with the source pack in its prompt. It starts from the pack, searches only for what the pack lacks, or **hires** a specialist (`agents/dept-specialist.md`) for a task. Every hire, and every refusal at the cap, is logged.
+4. Agents work only from the uploaded manuals, cite document, section and page, save results with `save_output` (`safety-kb/_outputs/<WR>/<task>.md`) and move tasks through `todo → in_progress → done` (or `blocked`), always with a note.
+5. When the last task is done the Chief reads the notes and outputs (the File Checker's documentation issues are in his review message), builds any file you asked for, and sends you a **completion report** that lists every file with its full path.
+
+### Read once, not again and again
+- **Source packs** hold the sections a task needs, already read. The prompt of a Head or specialist contains them, so there is nothing to look up first.
+- `read_section` **does not send a part twice**: a part already in the agent's source pack, or already read in the same run, comes back as "already have it" (pass `again=true` to force it). A part another agent read is served from memory, and the KB files are cached in memory while unchanged (`safety-kb/_index/search.db` makes searches take milliseconds).
+
+### Interconnection by keywords, with a little self-learning
+Departments connect by **words, not by reading everything**. When a task mentions a term another department owns (for example "unstable approach" → FDM), the Head's prompt gets a *Linked by keywords* section with only the matching memory notes, open board items and manual sections of that department (`related_departments` does the same on demand). The map (`safety-kb/_team/links.json`, `kb.py links show`) teaches itself: the Chief's tasks teach it which department owns which words, a question to another department teaches it that department's words, and a word nobody has taught yet is looked up once in the saved search index. One passing mention is only a weak hint; a manual that uses the word, or a second mention, makes it a link. Words that point at every department ("safety", "procedure") are ignored. Wrong link: `kb.py links forget <term>`. The dashboard's Organisation page lists what was learned.
+
+### Which Claude is in use, and upgrading it
+By default every agent uses the model of your Claude Code session. The work loop reports that model (`next_work` gets `session_model`), so the dashboard's Overview ("Claude (your session)") and `/flight-safety-agents:status` show it, and each recent run shows the model it was asked to use. To upgrade, use `/flight-safety-agents:model` or the **Which Claude** card on the Overview: presets **Recommended** (Chief and File Checker on Opus, departments on Sonnet), **Best quality** (everyone on Opus), **Economy** and **Same as my session**, or a model per kind of agent (Chief, File Checker, Vertical Heads, specialists). Opus, Sonnet and Haiku always mean the newest version your Claude plan offers; the setting applies from the next run and is passed to each Agent call. Your session's own model is changed with `/model` in Claude Code. If a run fails with a model error, set that role back to "Same as my session".
 
 The main session is only the office manager: it asks the plugin's MCP server what is ready (`next_work`), starts those agents in parallel (up to 4 at a time) and reports back when each finishes. An agent wakes only for messages it must act on (new task, instruction, question, blocked task, review). A work request pauses after 60 agent runs since your last message and asks you to continue, so a loop can never run away.
 
@@ -222,7 +239,7 @@ Files are written with the Python standard library (Office Open XML), so nothing
 The Chief starts as **Dhruv Rebbapragada**, and every name is the Owner's to change: the Chief, any Vertical Head, any hired specialist, and department display names. Use `/flight-safety-agents:rename <who> -> <new name>` or the Rename buttons in the Org Chart. Only the name changes: ids, tasks, history and the department's knowledge-base folder stay. The renamed agent gets a note, the Chat Feed logs it, and every prompt, report and dashboard view uses the new name from then on. Two active agents (or departments) cannot share a name.
 
 ### Dashboard
-A dark, gold-accented control room with a left sidebar (it becomes a top bar on phones) that also shows the live connection, how many agents are working and the Chief. Pages: Overview (key figures, work requests, briefs, progress, **files built with Download links**, **who is working now**, recent agent runs), Task Board (kanban with each task's note history), Organisation (an org chart: the Chief at the top, a branch per department with its Vertical Head and hired specialists, hire reasons, team size against the cap of 5, Rename on every card, agents at work highlighted), Communications (every message between you and the agents with avatars, message type and task, filterable by department, agent and task) and Owner Console (new work, instructions, add/update/retire departments). Updates are live. Work or instructions sent from the dashboard are picked up when you run `/flight-safety-agents:run` in Claude Code; the dashboard reminds you.
+A dark, gold-accented control room with a left sidebar (it becomes a top bar on phones) that also shows the live connection, how many agents are working and the Chief. Pages: Overview (key figures including the Claude in use and sources checked, **a card to see and upgrade which Claude each agent uses**, work requests, briefs, progress, **files built with Download links**, **who is working now**, recent agent runs), Task Board (kanban with each task's note history and a chip showing whether the File Checker covered its sources), Organisation (an org chart: the Chief at the top, the File Checker below, a branch per department with its Vertical Head and hired specialists, plus the keyword links the team has learned, hire reasons, team size against the cap of 5, Rename on every card, agents at work highlighted), Communications (every message between you and the agents with avatars, message type and task, filterable by department, agent and task) and Owner Console (new work, instructions, add/update/retire departments). Updates are live. Work or instructions sent from the dashboard are picked up when you run `/flight-safety-agents:run` in Claude Code; the dashboard reminds you.
 
 The dashboard server binds to 127.0.0.1 only, accepts only local Host headers and needs the token from the `/start` link for every API call.
 
@@ -248,6 +265,8 @@ cd frontend && npm install && npm test && npm run build  # dashboard
 - Agents run only while a command (`/work`, `/tell`, `/run`) is running the loop in Claude Code; the dashboard shows and queues, it does not run agents by itself.
 - `/api/messages` returns at most 500 messages per call by default; the Chat Feed shows the latest window.
 - No browser-level end-to-end tests (the dashboard has unit tests; the backend is tested over real HTTP and stdio).
+- The File Checker adds one agent run per brief (and one per re-plan that adds tasks) before the departments start. It picks sections from search results, so it is only as good as the manuals' wording; its `issues` are hints to confirm, not a legal check of the documents.
+- Keyword links are hints too: they are learned from usage and can be wrong or stale (`kb.py links forget`). Models are chosen per kind of agent, not per task; "which Claude is in use" depends on the work loop reporting the session's model (`session_model`), which the `/work`, `/tell` and `/run` commands do.
 
 ## Repository layout
 
@@ -258,8 +277,8 @@ skills/
   safety-team/         coordinator
   sms-dept/  audit-dept/  fdm-dept/
   safety-add-department/   + assets/ templates
-  start/ add-dept/ work/ tell/ run/ status/ stop/   Flight Safety Command commands
-agents/                sms-agent, audit-agent, fdm-agent; chief-of-flight-safety, vertical-head, dept-specialist
+  start/ add-dept/ work/ tell/ run/ status/ stop/ rename/ model/   Flight Safety Command commands
+agents/                sms-agent, audit-agent, fdm-agent; chief-of-flight-safety, file-checker, vertical-head, dept-specialist
 .mcp.json              the Flight Safety Command MCP server (python3 backend/mcp_main.py)
 backend/               Flight Safety Command (standard library): store, workflow, work loop, MCP server,
                        dashboard server, bundled UI in backend/fsa/web, API.md

@@ -149,6 +149,10 @@ class App:
               lambda r: self.store.rename_agent(r.params["aid"], r.json("name")["name"])),
             R("POST", "/api/departments/(?P<did>[^/]+)/rename",
               lambda r: self.store.rename_department(r.params["did"], r.json("name")["name"])),
+            R("GET", "/api/models", lambda r: self.office.models()),
+            R("POST", "/api/models", self.set_models),
+            R("GET", "/api/links", lambda r: self.kb.links_show(r.q("limit", 60, int))),
+            R("GET", "/api/source-packs", lambda r: self.store.list_source_packs(r.q("work_request_id"))),
             R("GET", "/api/files", lambda r: self.store.list_files(r.q("work_request_id"))),
             R("GET", "/api/files/(?P<fid>[0-9]+)/download", self.download),
             R("GET", "/api/events", None, stream=True),
@@ -204,6 +208,12 @@ class App:
         out = self.wf.send_instruction(b["target"], b["text"], b.get("work_request_id"))
         out["hint"] = RUN_HINT if self.wf.agent_mode else None
         return 201, out
+
+    def set_models(self, r):
+        b = r.json()
+        if not b.get("preset") and not b.get("roles"):
+            raise HttpError(422, "Give a preset or roles")
+        return self.office.set_models(b.get("roles"), b.get("preset"))
 
     def task_status(self, r):
         b = r.json("status", "note")

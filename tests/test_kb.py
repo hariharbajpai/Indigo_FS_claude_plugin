@@ -386,6 +386,81 @@ class IndexTests(unittest.TestCase):
         self.assertTrue(self.search("risk matrix"))
 
 
+class LinksTests(unittest.TestCase):
+    """kb.py links: departments connect by words, and the map teaches itself."""
+
+    FDM = ("# Chapter 1 Exceedances\n## 1.1 Unstable approach monitoring\nAn unstable approach is flagged when speed deviates. "
+           "Unstable approach events are reviewed weekly.\n## 1.2 Event rates\nUnstable approach rate is trended per airport.\n")
+    SMS = ("# Chapter 1 Hazards\n## 1.1 Hazard register\nEvery hazard is logged in the hazard register. "
+           "Unstable approach hazards are assessed with the risk matrix.\n## 1.2 Indicators\nSPIs are reviewed monthly.\n")
+    AUD = "# Chapter 1 Audit\n## 1.1 Findings\nFindings are categorised level 1 or 2.\n"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        for dept, text in (("fdm", self.FDM), ("sms", self.SMS), ("audit", self.AUD)):
+            f = self.tmp / f"{dept}.md"
+            f.write_text(text)
+            kb(self.tmp, "ingest", str(f), "--dept", dept, "--title", f"{dept.upper()} Manual")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def find(self, text, dept=None, *extra):
+        args = ["links", "find", "--text", text, "--json", *extra] + (["--dept", dept] if dept else [])
+        return json.loads(kb(self.tmp, *args).stdout)
+
+    def test_a_word_points_at_the_department_whose_manual_uses_it(self):
+        res = self.find("The unstable approach rate at Delhi is rising", "audit")
+        self.assertEqual(res["related"][0]["dept"], "fdm")
+        self.assertIn("unstable approach", res["related"][0]["via"])
+        self.assertTrue(res["related"][0]["manuals"])
+        self.assertEqual(res["related"][0]["manuals"][0]["file"].split("/")[0], "fdm")
+        self.assertEqual(self.find("Please prepare the summary and the status report", "audit")["related"], [])  # filler only
+
+    def test_it_learns_from_the_manuals_tasks_and_questions(self):
+        self.find("unstable approach", "audit")  # discovered from the saved index
+        shown = json.loads(kb(self.tmp, "links", "show", "--json").stdout)["links"]
+        self.assertTrue(any(x["term"] == "unstable approach" and x["dept"] == "fdm" and "manuals" in x["src"] for x in shown))
+        kb(self.tmp, "links", "learn", "--dept", "audit", "--text", "Prepare the corrective action plan for bird strikes", "--src", "task")
+        res = self.find("Check the bird strike corrective action", "sms")
+        self.assertEqual(res["related"][0]["dept"], "audit")
+        self.find("Wildlife hazard review", "sms", "--learn")  # one mention is only a weak hint...
+        self.assertEqual(self.find("wildlife", "audit")["related"], [])
+        self.find("Wildlife hazard review", "sms", "--learn")  # ...a second one makes it a link
+        self.assertEqual(self.find("wildlife", "audit")["related"][0]["dept"], "sms")
+        kb(self.tmp, "links", "forget", "wildlife", "--dept", "sms")
+        self.assertEqual(self.find("wildlife", "audit")["related"], [])
+
+    def test_naming_a_department_and_the_asker_is_left_out(self):
+        res = self.find("Check the SMS hazard register against the audit checklist", "audit")
+        self.assertEqual([e["dept"] for e in res["related"]], ["sms"])  # audit is the asker; sms is named
+        self.assertGreaterEqual(res["related"][0]["score"], 3.0)
+
+    def test_memory_and_open_board_items_come_only_when_their_words_match(self):
+        kb(self.tmp, "mem", "add", "--dept", "fdm", "--kind", "source-map", "--text",
+           "Unstable approach thresholds: FDM Manual 1.1", "--src", "[FDM Manual §1.1]")
+        kb(self.tmp, "mem", "add", "--dept", "fdm", "--kind", "lesson", "--text", "Hangar doors close at night", "--src", "user")
+        kb(self.tmp, "board", "post", "--from", "sms", "--to", "fdm", "--subject", "Unstable approach trend",
+           "--text", "Need the airport trend")
+        kb(self.tmp, "board", "post", "--from", "sms", "--to", "fdm", "--subject", "Cafeteria menu", "--text", "Lunch?")
+        res = self.find("Assess the unstable approach hazard", "sms")
+        fdm = res["related"][0]
+        self.assertEqual([m["text"] for m in fdm["memory"]], ["Unstable approach thresholds: FDM Manual 1.1"])
+        self.assertEqual([b["subject"] for b in fdm["board"]], ["Unstable approach trend"])
+        text = kb(self.tmp, "links", "find", "--text", "Assess the unstable approach hazard", "--dept", "sms").stdout
+        self.assertIn("Linked by keywords", text)
+        self.assertNotIn("Hangar doors", text)
+
+    def test_empty_kb_and_bad_input_are_calm(self):
+        empty = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, empty, True)
+        r = kb(empty, "links", "find", "--text", "anything at all", "--json")
+        self.assertEqual(json.loads(r.stdout)["related"], [])
+        self.assertNotEqual(kb(self.tmp, "links", "learn", "--dept", "sms", check=False).returncode, 0)
+        self.assertNotEqual(kb(self.tmp, "links", "forget", "never-learned", check=False).returncode, 0)
+        self.assertIn("nothing learned", kb(empty, "links", "show").stdout)
+
+
 class DetectTests(unittest.TestCase):
     """match reads title, revision and date from the first pages, so nobody has to open every file."""
 

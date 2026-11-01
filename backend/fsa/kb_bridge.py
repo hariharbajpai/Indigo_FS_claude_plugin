@@ -23,6 +23,8 @@ from .store import Invalid
 DEFAULT_READ_CHARS = 16000   # a whole file read: a few thousand tokens at most
 DEFAULT_WINDOW_CHARS = 4000  # a read around a line from search_manuals: about a thousand tokens
 MAX_READ_CHARS = 40000
+PACK_CHARS = 2400            # what the File Checker stores per section of a source pack
+CACHE_FILES = 64             # chunk files kept in memory, so a file is read from disk once while it is unchanged
 _PAGE_LINE = re.compile(r"^<!-- page (\d+) -->$")
 _HEAD_LINE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 
@@ -44,10 +46,38 @@ def _front_matter(lines):
     return {}, 0
 
 
+def _context(lines, meta, body_from, start):
+    """Document, revision, section and page of `start` in a chunk file (front matter is not part of the text)."""
+    page, section = meta.get("page_start"), meta.get("section")
+    for text in lines[body_from:start]:
+        m = _PAGE_LINE.match(text)
+        if m:
+            page = int(m.group(1))
+        h = _HEAD_LINE.match(text)
+        if h:
+            section = h.group(1)
+    ctx = {"doc": meta.get("doc"), "revision": meta.get("revision"), "section": section, "page": page}
+    return {k: v for k, v in ctx.items() if v not in (None, "")}
+
+
 class KbBridge:
     def __init__(self, root=None, kb_script=None):
         self.root = os.path.abspath(root or paths.kb_root())
         self.kb_script = os.path.abspath(kb_script or paths.kb_script())
+        self._cache = {}  # full path -> (mtime_ns, size, lines)
+
+    def _lines(self, full):
+        """The lines of a KB file, read from disk only when it is new or has changed."""
+        st = os.stat(full)
+        hit = self._cache.get(full)
+        if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+            return hit[2]
+        with open(full, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+        if len(self._cache) >= CACHE_FILES:
+            self._cache.pop(next(iter(self._cache)))
+        self._cache[full] = (st.st_mtime_ns, st.st_size, lines)
+        return lines
 
     # ---- running kb.py ----
     def run(self, *args, check=True):
@@ -221,8 +251,7 @@ class KbBridge:
         full = self.inside(path)
         if not os.path.isfile(full):
             raise Invalid(f"No such file in the knowledge base: {path}")
-        with open(full, encoding="utf-8", errors="replace") as f:
-            lines = f.read().splitlines()
+        lines = self._lines(full)
         total = len(lines)
         try:
             line = int(line) if line else None
@@ -250,17 +279,24 @@ class KbBridge:
         if end < total:
             res["next_line"] = end + 1
         if start > 1:  # the front matter is not in the text, so say which document, section and page this is
-            page, section = meta.get("page_start"), meta.get("section")
-            for text in lines[body_from:start]:
-                m = _PAGE_LINE.match(text)
-                if m:
-                    page = int(m.group(1))
-                h = _HEAD_LINE.match(text)
-                if h:
-                    section = h.group(1)
-            ctx = {"doc": meta.get("doc"), "revision": meta.get("revision"), "section": section, "page": page}
-            res["context"] = {k: v for k, v in ctx.items() if v not in (None, "")}
+            res["context"] = _context(lines, meta, body_from, start)
         return res
+
+    def pack_source(self, file, line=None, chars=PACK_CHARS):
+        """One section of a source pack, read by the system itself so the citation is exact: the document, revision,
+        section and page come from the file, not from whoever picked it. Raises Invalid if the file is not in the
+        knowledge base."""
+        r = self.read_file(file, line, chars)
+        full = r["file"]
+        lines = self._lines(full)
+        meta, body_from = _front_matter(lines)
+        ctx = _context(lines, meta, body_from, r["from_line"])
+        rel = os.path.relpath(full, os.path.realpath(self.root)).replace(os.sep, "/")
+        issues = []
+        if "/_superseded/" in "/" + rel:
+            issues.append(f"{ctx.get('doc') or rel} rev {ctx.get('revision') or '?'} is a superseded or withdrawn revision")
+        return dict(ctx, file=rel, line=r["from_line"], to_line=r["to_line"], dept=meta.get("dept"),
+                    extract=r["text"], truncated=r["truncated"], issues=issues)
 
     def save_output(self, folder, name, content):
         if not (content or "").strip():
@@ -273,6 +309,42 @@ class KbBridge:
         with open(path, "w", encoding="utf-8") as f:
             f.write(content.rstrip() + "\n")
         return path
+
+    # ---- keyword links between departments (kb.py links) ----
+    def links_find(self, text, dept=None, learn=False, top=3):
+        """Which other departments do the words in `text` point at, and what do they know about it?
+        {"terms": [...], "related": [{dept, score, via, memory, board, manuals}]}; empty when nothing is tied."""
+        empty = {"terms": [], "related": []}
+        if not (text or "").strip() or not os.path.isdir(self.root):
+            return empty
+        args = ["links", "find", "--text", text[:4000], "--json", "--top", str(int(top))]
+        if dept:
+            args += ["--dept", self.kb_dept(dept)]
+        if learn:
+            args.append("--learn")
+        try:
+            r = self.run(*args, check=False)
+            return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else empty
+        except (Invalid, ValueError):
+            return empty
+
+    def links_learn(self, text, dept, src="task"):
+        """Teach the map that the words in `text` belong to `dept`. Never raises: learning is a bonus."""
+        if not (text or "").strip() or not dept or not os.path.isdir(self.root):
+            return
+        try:
+            self.run("links", "learn", "--text", text[:4000], "--dept", self.kb_dept(dept), "--src", src, check=False)
+        except Invalid:
+            pass
+
+    def links_show(self, limit=60):
+        if not os.path.isdir(self.root):
+            return {"links": [], "ignored": []}
+        try:
+            r = self.run("links", "show", "--json", "--limit", str(int(limit)), check=False)
+            return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {"links": [], "ignored": []}
+        except (Invalid, ValueError):
+            return {"links": [], "ignored": []}
 
     # ---- board mirror ----
     def board_entries(self):

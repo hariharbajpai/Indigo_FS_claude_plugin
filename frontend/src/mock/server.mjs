@@ -1,9 +1,23 @@
-// Mock API on :8000 following backend/API.md (v0.4.0). Run: npm run mock
+// Mock API on :8000 following backend/API.md (v0.10.0). Run: npm run mock
 import http from 'node:http'
 import { makeState } from './fixtures.js'
 
 const S = makeState()
 const clients = new Set()
+const MODELS = { session_model: 'claude-sonnet-5-5', session_reported_at: null, preset: null,
+  roles: { chief: { setting: 'inherit' }, checker: { setting: 'inherit' }, head: { setting: 'inherit' }, hired: { setting: 'inherit' } },
+  options: [{ id: 'inherit' }, { id: 'haiku' }, { id: 'sonnet' }, { id: 'opus' }],
+  presets: [
+    { id: 'recommended', label: 'Recommended', note: 'Chief and File Checker on Opus, departments on Sonnet', roles: { chief: 'opus', checker: 'opus', head: 'sonnet', hired: 'sonnet' } },
+    { id: 'best', label: 'Best quality', note: 'Everyone on Opus', roles: { chief: 'opus', checker: 'opus', head: 'opus', hired: 'opus' } },
+    { id: 'economy', label: 'Economy', note: 'Sonnet, hired specialists on Haiku', roles: { chief: 'sonnet', checker: 'sonnet', head: 'sonnet', hired: 'haiku' } },
+    { id: 'inherit', label: 'Same as my session', note: 'Everyone uses the session model', roles: { chief: 'inherit', checker: 'inherit', head: 'inherit', hired: 'inherit' } }],
+  hint: 'Your session runs claude-sonnet-5-5. The agents use the same model. To upgrade, pick Recommended or Best quality.' }
+const modelsOut = () => {
+  const cur = Object.fromEntries(Object.entries(MODELS.roles).map(([k, v]) => [k, v.setting]))
+  MODELS.preset = MODELS.presets.find((p) => JSON.stringify(p.roles) === JSON.stringify(cur))?.id || null
+  return MODELS
+}
 let n = 100, eventId = 100
 const iso = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z')
 const emit = (type, data = {}) => {
@@ -70,9 +84,13 @@ http.createServer(async (req, res) => {
     S.tasks.forEach((t) => tasks[t.status]++)
     return send(res, 200, { chief: S.chief, counts: { departments: S.departments.filter((d) => d.status === 'active').length, agents: S.agents.filter((a) => a.status === 'active').length + 1, work_requests: S.work_requests.length, tasks, messages: S.messages.length }, work_requests: S.work_requests.map(wrOut).reverse(), last_event_id: eventId })
   }
+  if (get && p === '/api/models') return send(res, 200, modelsOut())
+  if (get && p === '/api/links') return send(res, 200, { links: [
+    { term: 'hydraulic', dept: 'maintenance', weight: 2.4, seen: 5, last: iso().slice(0, 10), src: ['manuals', 'task'] },
+    { term: 'crew procedur', dept: 'flight-operations', weight: 1.8, seen: 3, last: iso().slice(0, 10), src: ['task'] }], ignored: [] })
   if (get && p === '/api/org') {
     const all = q.get('include_retired') === 'true'
-    return send(res, 200, { chief: S.chief, departments: S.departments.filter((d) => all || d.status === 'active').map(orgRow) })
+    return send(res, 200, { chief: S.chief, checker: S.checker, departments: S.departments.filter((d) => all || d.status === 'active').map(orgRow) })
   }
   if (get && p === '/api/departments') return send(res, 200, S.departments.filter((d) => q.get('include_retired') === 'true' || d.status === 'active'))
   if (get && p === '/api/work-requests') return send(res, 200, S.work_requests.map(wrOut).reverse())
@@ -87,9 +105,18 @@ http.createServer(async (req, res) => {
   if (get && p === '/api/messages') return send(res, 200, S.messages.filter((x) => !q.get('task') || x.task_id === q.get('task')).slice(-Number(q.get('limit') || 500)))
   if (req.method !== 'POST') return send(res, 404, { detail: 'not found' })
 
+
   const raw = await body(req)
   const ctype = req.headers['content-type'] || ''
   const json = () => { try { return JSON.parse(raw.toString() || '{}') } catch { return {} } }
+  if (p === '/api/models') {
+    const b = json()
+    const roles = b.preset ? MODELS.presets.find((x) => x.id === b.preset)?.roles : b.roles
+    if (!roles) return send(res, 422, { detail: 'Give a preset or roles' })
+    for (const [k, v] of Object.entries(roles)) if (MODELS.roles[k]) MODELS.roles[k].setting = v
+    emit('models.changed', roles)
+    return send(res, 200, modelsOut())
+  }
   if (p === '/api/work-requests') {
     const { text } = json()
     if (!text || !text.trim()) return send(res, 422, { detail: 'text must not be empty' })

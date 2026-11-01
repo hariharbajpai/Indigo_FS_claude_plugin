@@ -1,9 +1,10 @@
-// Fixture state for the mock server, in the shapes of backend/API.md (v0.4.0).
+// Fixture state for the mock server, in the shapes of backend/API.md (v0.10.0).
 const now = Date.now()
 const ago = (m) => new Date(now - m * 60000).toISOString().replace(/\.\d+Z$/, 'Z')
 
 export function makeState() {
   const chief = { id: 'chief', name: 'Dhruv Rebbapragada', role: 'Chief of Flight Safety', kind: 'chief', dept: null, status: 'active', created_at: ago(90) }
+  const checker = { id: 'checker', name: 'File Checker', role: 'Documentation Controller', kind: 'checker', dept: null, status: 'active', created_at: ago(90) }
   const ag = (id, name, role, kind, dept, status = 'active') => ({ id, name, role, kind, dept, status, created_at: ago(80) })
   const dept = (id, name, head, status = 'active') => ({ id, name, head_id: head.id, head_name: head.name, status, created_at: ago(80) })
   const meera = ag('ag-1', 'Meera Rao', 'Vertical Head', 'head', 'maintenance')
@@ -18,6 +19,7 @@ export function makeState() {
   })
   return {
     chief,
+    checker,
     agents: [meera, sam, old, hyd],
     departments: [dept('maintenance', 'Maintenance', meera), dept('flight-operations', 'Flight Operations', sam), dept('legacy-fuel', 'Legacy Fuel', old, 'retired')],
     work_requests: [{ id: 'WR-1', text: 'Review hydraulic incidents of last quarter', status: 'In progress', created_at: ago(30), updated_at: ago(5), brief_version: 1 }],

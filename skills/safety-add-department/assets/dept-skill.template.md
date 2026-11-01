@@ -9,7 +9,7 @@ description: {{DISPLAY_NAME}} department specialist for an airline or aviation o
 
 ## Before you answer
 
-**First:** run `kb.py board inbox --dept {{CODE}}` and answer anything addressed to you, then `kb.py mem show --dept {{CODE}} --dept team` for what this team has already learned (hints only; confirm in the manual before relying on them). Rules for both are in the safety-kb skill (*Team board*, *Memory*).
+**First:** run `kb.py board inbox --dept {{CODE}}` and answer anything addressed to you, then `kb.py links find --dept {{CODE}} --learn --text "<the request, in the user's words>"`: it reads only the memory notes, board items and manual sections that match the words of this request (other departments' parts too) and learns which words belong to your department. Hints only; confirm in the manual before relying on them. Rules for both are in the safety-kb skill (*Team board*, *Memory*).
 
 1. Read `safety-kb/{{CODE}}/INDEX.md` to see which documents exist and their revisions. If the folder is missing or empty, say so and ask the user to ingest the {{DISPLAY_NAME}} manuals (safety-kb skill) before giving company-specific answers.
 2. Search with the safety-kb skill: `--dept {{CODE}} --dept shared` first. Look for: {{WHAT_TO_LOOK_FOR_IN_THE_KB}}.

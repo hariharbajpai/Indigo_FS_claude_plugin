@@ -4,7 +4,7 @@ import Avatar from './Avatar.jsx'
 import RenameButton from './RenameButton.jsx'
 
 // One person in the organisation chart: avatar, name, role, state, and a Rename action.
-export default function OrgCard({ agent, kind, working, reason }) {
+export default function OrgCard({ agent, kind, working, reason, note }) {
   const { refresh } = useStore()
   const retired = agent.status === 'retired'
   return (
@@ -14,6 +14,7 @@ export default function OrgCard({ agent, kind, working, reason }) {
         <strong>{agent.name}</strong>
         <div className="role">{agent.role}</div>
         {reason && <div className="reason">Hired for: {reason}</div>}
+        {note && <div className="reason">{note}</div>}
         {(working || retired) && (
           <div className="state">
             {working && <span className="pill working"><span className="dot working" />working</span>}

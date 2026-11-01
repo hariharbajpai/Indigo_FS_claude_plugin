@@ -64,7 +64,9 @@ class ProtocolTests(unittest.TestCase):
         self.m.send({"jsonrpc": "2.0", "method": "notifications/initialized"})  # no reply expected
         self.assertEqual(self.m.rpc("ping")["result"], {})
         tools = self.m.rpc("tools/list")["result"]["tools"]
-        self.assertEqual(len(tools), 21)
+        self.assertEqual(len(tools), 26)
+        names = {t["name"] for t in tools}
+        self.assertTrue({"submit_source_pack", "related_departments", "models", "set_models", "links"} <= names)
         for t in tools:
             self.assertLessEqual(len(PREFIX + t["name"]), 64, t["name"])  # Claude's tool-name limit
             self.assertEqual(t["inputSchema"]["type"], "object")
@@ -124,8 +126,21 @@ class FullFlowTests(unittest.TestCase):
              goals=["Gaps listed"], tasks=[{"title": "Review hazard ID", "dept": "engine-maintenance",
                                             "acceptance": "Gaps with manual refs"}])
         m.ok("activation_done", activation_id=c["activation_id"], report="Brief v1")
+        nw = m.ok("next_work", session_model="claude-sonnet-5-5")  # the File Checker prepares the sources first
+        [ck] = nw["activations"]
+        self.assertEqual(ck["agent"], "flight-safety-agents:file-checker")
+        self.assertIn("TK-1", ck["prompt"])
+        pack = m.ok("submit_source_pack", activation=ck["activation_id"], packs=[{
+            "task_id": "TK-1", "coverage": "full", "summary": "The manual's hazard identification section",
+            "sources": [{"file": hits[0]["file"], "line": hits[0]["line"], "why": "hazard identification"}]}])
+        self.assertEqual(pack["saved"][0]["sections"], 1)
+        self.assertEqual(pack["still_waiting"], [])
+        m.ok("activation_done", activation_id=ck["activation_id"], report="Pack ready")
         [h] = m.ok("next_work")["activations"]
         self.assertEqual(h["agent"], "flight-safety-agents:vertical-head")
+        self.assertIn("Source pack for TK-1 (File Checker, coverage full)", h["prompt"])
+        self.assertEqual(m.ok("read_section", activation=h["activation_id"], file=hits[0]["file"],
+                              line=hits[0]["line"])["already_in_source_pack"][:23], "source pack for TK-1, s")
         m.ok("hire_agent", activation=h["activation_id"], name="Ravi", role="Hazard analyst", reason="Depth",
              task_id="TK-1")
         m.ok("activation_done", activation_id=h["activation_id"], report="Hired Ravi")
@@ -157,6 +172,12 @@ class FullFlowTests(unittest.TestCase):
         self.assertEqual(st["work_requests"][0]["status"], "Done")
         self.assertEqual(st["work_requests"][0]["files"], [deck["path"]])
         self.assertEqual(st["departments"][0]["hired"], ["Ravi (Hazard analyst, ag-2)"])
+        self.assertIn("File Checker", st["file_checker"])
+        self.assertEqual(st["claude_models"]["session"], "claude-sonnet-5-5")
+        up = m.ok("set_models", preset="recommended")
+        self.assertEqual(up["roles"]["chief"]["setting"], "opus")
+        self.assertEqual(m.ok("models")["preset"], "recommended")
+        self.assertEqual(m.ok("links")["links"][0]["dept"], "engine-maintenance")  # learned from the Chief's task
         ins = m.ok("owner_instruction", text="Ab cabin safety bhi dekho", target="chief")
         self.assertEqual(ins["delivered_to"], "Dhruv Rebbapragada")
         r = m.ok("rename", target="chief", new_name="Arjun Mehta")

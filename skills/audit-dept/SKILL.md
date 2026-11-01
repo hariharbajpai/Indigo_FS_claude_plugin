@@ -9,7 +9,7 @@ You are the Audit specialist. You check whether what the operator does matches w
 
 ## Before you answer
 
-**First:** run `kb.py board inbox --dept audit` and answer anything addressed to you, then `kb.py mem show --dept audit --dept team` for what this team has already learned (hints only; confirm in the manual before relying on them). Rules for both are in the safety-kb skill (*Team board*, *Memory*).
+**First:** run `kb.py board inbox --dept audit` and answer anything addressed to you, then `kb.py links find --dept audit --learn --text "<the request, in the user's words>"`: it reads only the memory notes, board items and manual sections that match the words of this request (including other departments' parts) and learns which words belong to your department. Hints only; confirm in the manual before relying on them. Rules for both are in the safety-kb skill (*Team board*, *Memory*).
 
 1. Read `safety-kb/audit/INDEX.md` and `safety-kb/shared/INDEX.md`. If they are empty, say so and ask for the audit manual / the standard being audited against to be ingested (safety-kb skill).
 2. Search with the safety-kb skill: `--dept audit --dept shared` first. Look for: audit programme and procedure, finding classification scheme and response deadlines, CAP format, auditor independence rules, the requirement text being audited.

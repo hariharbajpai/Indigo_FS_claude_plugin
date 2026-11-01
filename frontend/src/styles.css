@@ -328,3 +328,21 @@ form button[type=submit], form > button, form p > button { margin-top: 14px }
   .dept-label { align-self: flex-start }
   .org-card .actions { opacity: 1 }
 }
+
+/* ---------- v0.10: File Checker, models, learned links ---------- */
+.avatar.checker { color: #ffb066; border: 1.5px solid rgba(255, 176, 102, .45); background: rgba(255, 176, 102, .09) }
+.org-card.checker { min-width: 260px; border-color: rgba(255, 176, 102, .4); background: linear-gradient(160deg, rgba(255, 176, 102, .09), var(--surface) 60%) }
+.org-link { height: 22px; border-left: 1.5px solid var(--line-2) }
+.org-gate { margin-top: 6px }
+.models-table { width: 100%; border-collapse: collapse; margin: 6px 0 4px }
+.models-table th { text-align: left; font-weight: 600; font-size: .82rem; color: var(--text-2); padding: 6px 10px 6px 0; width: 46%; vertical-align: top }
+.models-table td { padding: 4px 0 }
+.models-table select { padding: 6px 10px; font-size: .84rem }
+.preset-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px }
+.preset-row button { padding: 5px 12px; font-size: .78rem }
+.chip.pack { background: rgba(255, 176, 102, .1); border-color: rgba(255, 176, 102, .4); color: #ffb066 }
+.chip.pack.full { background: rgba(95, 211, 154, .08); border-color: rgba(95, 211, 154, .38); color: var(--ok) }
+.chip.pack.none { background: rgba(242, 113, 107, .08); border-color: rgba(242, 113, 107, .4); color: var(--bad) }
+.chip.model { margin-left: 6px; font-weight: 600 }
+.links-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px }
+.links-list li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px }

@@ -20,11 +20,14 @@ PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 INSTRUCTIONS = (
     "Flight Safety Command runs a flight-safety organisation as subagents in this Claude Code session: the Chief "
-    "of Flight Safety, one Vertical Head per department and the specialists they hire (the Owner can rename any "
-    "of them). The Owner works through /flight-safety-agents:start, add-dept, work, tell, run, rename and status. When a command "
-    "runs the work loop, call next_work, start one Agent per activation exactly as given, and call "
+    "of Flight Safety, the File Checker (reads the manuals once for every task, after the Chief and before the "
+    "departments), one Vertical Head per department and the specialists they hire (the Owner can rename any "
+    "of them). The Owner works through /flight-safety-agents:start, add-dept, work, tell, run, rename, model and status. When a command "
+    "runs the work loop, call next_work (with session_model = the exact model id you run as), start one Agent per "
+    "activation exactly as given (passing its model when it has one), and call "
     "activation_done with each agent's final report. The agent tools (get_briefing, send_message, submit_brief, "
-    "report_to_owner, update_task, hire_agent, assign_task, search_manuals, read_section, save_output, build_file) "
+    "report_to_owner, update_task, hire_agent, assign_task, search_manuals, read_section, save_output, build_file, "
+    "submit_source_pack, related_departments) "
     "belong to the subagents and need their activation id. Files the team builds (PPT, Word, Excel) are listed with "
     "their paths in the Chief's report.")
 
@@ -47,6 +50,15 @@ CONTENT_HELP = (
     "\"paragraphs\": [str], \"bullets\": [...], \"table\": {...}}]}. xlsx: {\"sheets\": [{\"name\": str, "
     "\"columns\": [str], \"rows\": [[text or number]]}]}. Text may use **bold**.")
 DELIVERABLE = obj({"format": {"type": "string", "enum": ["pptx", "docx", "xlsx"]}, "title": S}, ["format"])
+PACK_SOURCE = obj({"file": {"type": "string", "description": "`file` from search_manuals"},
+                   "line": {"type": "integer", "description": "`line` from search_manuals"},
+                   "why": {"type": "string", "description": "Why this section answers the task (short)"}}, ["file"])
+PACK = obj({"task_id": S, "coverage": {"type": "string", "enum": ["full", "partial", "none"]},
+            "summary": {"type": "string", "description": "What the sections say about the task, in a few lines"},
+            "issues": {"type": "array", "items": S,
+                       "description": "Documentation problems: sections that disagree, a superseded or unclear "
+                                      "revision, parts of the task the manuals do not cover, no documents"},
+            "sources": {"type": "array", "items": PACK_SOURCE}}, ["task_id"])
 
 TOOLS = [
     # ---- Owner / office manager ----
@@ -73,9 +85,22 @@ TOOLS = [
     ("owner_instruction", "Owner: send an instruction mid-way, to the Chief (target 'chief') or a department "
                           "(target = department id). The Chief re-plans.",
      obj({"text": S, "target": S, "work_request_id": S}, ["text"])),
+    ("models", "Owner: which Claude each kind of agent uses (Chief, File Checker, Vertical Heads, specialists), the "
+               "model of this Claude Code session as last reported, the presets and an upgrade hint.", obj({})),
+    ("set_models", "Owner: choose the Claude model per kind of agent, or a whole preset. roles = {chief|checker|head|"
+                   "hired|all: inherit|haiku|sonnet|opus}; preset = recommended | best | economy | inherit. "
+                   "Applies to the next run. Opus/Sonnet/Haiku always mean the newest version of that model.",
+     obj({"preset": {"type": "string", "enum": ["recommended", "best", "economy", "inherit"]},
+          "roles": {"type": "object", "description": "e.g. {\"chief\": \"opus\", \"head\": \"sonnet\"}"}})),
+    ("links", "Owner: the keyword links the team has learned between departments (word -> department).",
+     obj({"limit": {"type": "integer", "description": "Most links to show (default 60)"}})),
     ("next_work", "Office manager: get the agent runs that are ready. status work = start one Agent per "
-                  "activation; busy = wait for running agents; finished / no_run = stop and tell the Owner.",
-     obj({"reset_running": {"type": "boolean", "description": "Cancel runs left over from an earlier session"}})),
+                  "activation (pass its model when it has one); busy = wait for running agents; finished / no_run = "
+                  "stop and tell the Owner.",
+     obj({"reset_running": {"type": "boolean", "description": "Cancel runs left over from an earlier session"},
+          "session_model": {"type": "string",
+                            "description": "The exact model id this Claude Code session runs as (from your system "
+                                           "prompt), so the Owner can see which Claude is in use"}})),
     ("activation_done", "Office manager: report that a subagent finished. Pass its final report.",
      obj({"activation_id": S, "report": S}, ["activation_id", "report"])),
     # ---- agents ----
@@ -117,11 +142,21 @@ TOOLS = [
     ("read_section", "Agent: read part of a manual or saved output file (a `file` from search_manuals or a path "
                      "from save_output). Pass the result's `line` to read just that part (about 4,000 characters "
                      "from that line on). Without `line` you get the first 16,000 characters. When `truncated` is "
-                     "true, pass `next_line` as `line` to carry on.",
+                     "true, pass `next_line` as `line` to carry on. A part you already read in this run, or that is "
+                     "in your source pack, is not sent again (again=true forces it).",
      obj({"activation": ACT, "file": S,
           "line": {"type": "integer", "description": "Line from search_manuals (or next_line): read from here"},
-          "chars": {"type": "integer", "description": "How much to read, 500-40000 (default 4000 with line, else 16000)"}},
+          "chars": {"type": "integer", "description": "How much to read, 500-40000 (default 4000 with line, else 16000)"},
+          "again": {"type": "boolean", "description": "Read it again although you already have it"}},
          ["activation", "file"])),
+    ("submit_source_pack", "File Checker only: the sections each task needs, one pack per task. The system reads every "
+                           "section once (exact document, revision, section, page) and only then lets the "
+                           "department start. Give each section's `file` and `line` from search_manuals.",
+     obj({"activation": ACT, "packs": {"type": "array", "items": PACK}}, ["activation", "packs"])),
+    ("related_departments", "Agent: which other departments do the words in a task or question point at? Keyword-"
+                            "triggered: returns only the matching memory notes, board items and manual sections.",
+     obj({"activation": ACT, "text": {"type": "string", "description": "The words to look up"},
+          "top": {"type": "integer", "description": "Most departments, 1-5 (default 3)"}}, ["activation", "text"])),
     ("save_output", "Agent: save a report or other longer result as markdown for a task (or, for the Chief, a work "
                     "request id). Returns the file path to put in your task note.",
      obj({"activation": ACT, "task_id": S, "title": S, "content": {"type": "string", "description": "Markdown"}},
@@ -164,6 +199,12 @@ class Company:
         o, s = self.office, self.office.store
         chief = s.get_agent("chief")
         out["chief"] = f"{chief['name']}, {chief['role']} (id chief)"
+        if s.checker_active():
+            ck = s.get_agent("checker")
+            out["file_checker"] = f"{ck['name']}, {ck['role']} (id checker): prepares a source pack for every task"
+        m = o.models()
+        out["claude_models"] = {"session": m["session_model"] or "not reported yet",
+                                "agents": {k: v["effective"] for k, v in m["roles"].items()}, "hint": m["hint"]}
         out["departments"] = [{"id": r["department"]["id"], "name": r["department"]["name"],
                                "vertical_head": f"{r['head']['name']} ({r['head']['id']})",
                                "documents": len(self.kb.list_docs(r["department"]["id"])),
@@ -208,11 +249,20 @@ class Company:
         return {"delivered_to": r["message"]["recipient_name"], "work_request_id": r["message"]["work_request_id"],
                 "next": "Run the work loop (next_work) so the team acts on it."}
 
-    def next_work(self, reset_running=False):
+    def models(self):
+        return self.office.models()
+
+    def set_models(self, preset=None, roles=None):
+        return self.office.set_models(roles or None, preset or None)
+
+    def links(self, limit=60):
+        return self.kb.links_show(limit)
+
+    def next_work(self, reset_running=False, session_model=None):
         if not self.exists():
             return {"status": "no_run", "message": "Not set up yet. Add a department with "
                     "/flight-safety-agents:add-dept, then give the Chief work with /flight-safety-agents:work."}
-        return self.office.next_work(bool(reset_running))
+        return self.office.next_work(bool(reset_running), session_model)
 
     def activation_done(self, activation_id, report):
         return self.office.activation_done(activation_id, report)
@@ -247,8 +297,14 @@ class Company:
     def search_manuals(self, activation, query, dept=None, top=8):
         return self.office.tool_search(activation, query, dept or None, top)
 
-    def read_section(self, activation, file, line=None, chars=None):
-        return self.office.tool_read(activation, file, line, chars)
+    def read_section(self, activation, file, line=None, chars=None, again=False):
+        return self.office.tool_read(activation, file, line, chars, bool(again))
+
+    def submit_source_pack(self, activation, packs):
+        return self.office.tool_submit_source_pack(activation, packs)
+
+    def related_departments(self, activation, text, top=3):
+        return self.office.tool_related(activation, text, top)
 
     def save_output(self, activation, task_id, title, content):
         return self.office.tool_save_output(activation, task_id, title, content)

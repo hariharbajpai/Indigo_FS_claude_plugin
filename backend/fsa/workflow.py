@@ -7,7 +7,7 @@ Two modes:
 """
 import hashlib
 
-from . import CHIEF_ID, SYSTEM_ID
+from . import CHECKER_ID, CHIEF_ID, SYSTEM_ID
 from .planner import default_planner
 from .store import Conflict, Invalid, Store
 
@@ -130,12 +130,21 @@ class Workflow:
                                      needs_department=not used and bool(question),
                                      question=question, change_note=change_note, deliverables=deliverables)
         created = []
+        gate = self.agent_mode and self.store.checker_active()  # the File Checker prepares sources first
         for title, dept, desc, acc in cleaned:
             t = self.store.create_task(title, dept, desc, acc, wid)
-            self.store.add_message(author, by_id[dept]["head_id"],
-                                   f"Task {t['id']} for you: {title}. Acceptance: {acc or 'see description'}",
-                                   kind="assign", task_id=t["id"], dept=dept, work_request_id=wid)
+            if not gate:
+                self.store.add_message(author, by_id[dept]["head_id"],
+                                       f"Task {t['id']} for you: {title}. Acceptance: {acc or 'see description'}",
+                                       kind="assign", task_id=t["id"], dept=dept, work_request_id=wid)
             created.append(t)
+        if gate and created:
+            self.store.add_message(author, CHECKER_ID,
+                                   f"Brief v{brief['version']} of {wid} has {len(created)} new task"
+                                   f"{'s' if len(created) != 1 else ''} that need a source pack before their "
+                                   "departments start: " + "; ".join(
+                                       f"{t['id']} {t['title']} ({by_id[t['dept']]['name']})" for t in created),
+                                   kind="check", work_request_id=wid)
         lines = [f"Brief v{brief['version']}: {summary}"]
         if change_note:
             lines.append(f"Change: {change_note}")
@@ -156,6 +165,18 @@ class Workflow:
             self.store.set_wr_status(wid, "In progress")
         self._refresh_request(wid)
         return {"brief": brief, "tasks": created, "blocked": blocked}
+
+    def release_task(self, tid, pack):
+        """The File Checker's pack is in: tell the department's Head (or the specialist already on it) to start."""
+        t = self.store.get_task(tid)
+        if t["status"] not in ("todo", "in_progress"):
+            return None
+        to = t["agent_id"] or self.store.get_department(t["dept"])["head_id"]
+        return self.store.add_message(
+            CHIEF_ID, to, f"Task {tid} for you: {t['title']}. Acceptance: {t['acceptance'] or 'see description'}. "
+            f"The File Checker has read the manuals for it once: the source pack ({len(pack['sources'])} "
+            f"section{'s' if len(pack['sources']) != 1 else ''}, coverage {pack['coverage']}) is in your briefing.",
+            kind="assign", task_id=tid, dept=t["dept"], work_request_id=t["work_request_id"])
 
     def _deliverables(self, items, wid):
         if items is None:
@@ -227,6 +248,12 @@ class Workflow:
                     extra = (" The Owner asked for " + "; ".join(f"{FORMAT_NAMES[d['format']]} \"{d['title']}\""
                                                                  for d in todo)
                              + ": build it with build_file from the team's outputs first.") if todo else ""
+                    flagged = [f"{p['task_id']}: " + ("; ".join(p["issues"]) if p["issues"]
+                                                     else f"coverage {p['coverage']}")
+                               for p in self.store.list_source_packs(wid) if p["issues"] or p["coverage"] != "full"]
+                    if flagged:
+                        extra += (" The File Checker flagged documentation problems: " + " | ".join(flagged)
+                                  + ". Mention them in your report.")
                     self.store.add_message(
                         SYSTEM_ID, CHIEF_ID,
                         f"All tasks of {wid} are done ({len(tasks)}). Read the task notes and outputs, "

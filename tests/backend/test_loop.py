@@ -31,6 +31,16 @@ class Base(unittest.TestCase):
         self.assertIn(AGENT_TYPES[expect_agent], agents)
         return nw["activations"]
 
+    def clear_checker(self):
+        """Run the File Checker for every task waiting for a pack (these tests ingest no manuals: coverage none)."""
+        nw = self.o.next_work()
+        self.assertEqual(nw["status"], "work", nw)
+        [ck] = [a for a in nw["activations"] if a["agent"] == AGENT_TYPES["checker"]]
+        waiting = [t["id"] for t in self.s.tasks_awaiting_pack()]
+        self.o.tool_submit_source_pack(ck["activation_id"], [
+            {"task_id": t, "coverage": "none", "issues": ["no manuals loaded in this test"]} for t in waiting])
+        self.o.activation_done(ck["activation_id"], "packs done")
+
     def brief(self, aid, wid="WR-1"):
         return self.o.tool_submit_brief(aid, wid, "Plan", ["g"], [
             {"title": "Engine backlog", "dept": "engine-maintenance", "acceptance": "list"},
@@ -58,6 +68,15 @@ class WakeTests(Base):
         r = self.brief(chief["activation_id"])
         self.assertEqual([t["id"] for t in r["tasks_created"]], ["TK-1", "TK-2"])
         self.o.activation_done(chief["activation_id"], "briefed")
+        nw = self.o.next_work()  # the File Checker comes first: the departments wait for their source packs
+        self.assertEqual([a["agent"] for a in nw["activations"]], [AGENT_TYPES["checker"]])
+        self.assertIn("TK-1", nw["activations"][0]["prompt"])
+        self.assertIn("TK-2", nw["activations"][0]["prompt"])
+        self.assertEqual(self.s.list_messages(kind="assign"), [])
+        ck = nw["activations"][0]
+        self.o.tool_submit_source_pack(ck["activation_id"], [
+            {"task_id": t, "coverage": "none", "issues": ["no manuals loaded in this test"]} for t in ("TK-1", "TK-2")])
+        self.o.activation_done(ck["activation_id"], "packs done")
         nw = self.o.next_work()
         self.assertEqual(sorted(a["agent"] for a in nw["activations"]), [AGENT_TYPES["head"]] * 2)
         acts = {a["prompt"].split("(agent id \"")[1].split('"')[0]: a for a in nw["activations"]}
@@ -84,6 +103,7 @@ class WakeTests(Base):
         [c] = self.run_one("chief")
         self.brief(c["activation_id"])
         self.o.activation_done(c["activation_id"], "")
+        self.clear_checker()
         heads = self.o.next_work()["activations"]
         h = next(a for a in heads if "Asha" in a["description"])
         self.o.tool_update_task(h["activation_id"], "TK-1", "in_progress", "go")
@@ -103,6 +123,7 @@ class WakeTests(Base):
         tasks = [{"title": f"t{d['id']}", "dept": d["id"]} for d in self.s.list_departments()]
         self.o.tool_submit_brief(c["activation_id"], "WR-1", "all", [], tasks)
         self.o.activation_done(c["activation_id"], "")
+        self.clear_checker()
         nw = self.o.next_work()
         self.assertEqual(len(nw["activations"]), loopmod.MAX_PARALLEL)
         self.assertEqual(self.o.next_work()["status"], "busy")
@@ -148,6 +169,7 @@ class PermissionTests(Base):
         self.chief = c["activation_id"]
         self.brief(self.chief)
         self.o.activation_done(self.chief, "")
+        self.clear_checker()
         acts = self.o.next_work()["activations"]
         self.h_eng = next(a for a in acts if "Asha" in a["description"])["activation_id"]
         self.h_crew = next(a for a in acts if "Kabir" in a["description"])["activation_id"]
@@ -228,6 +250,7 @@ class KnowledgeToolTests(Base):
         p = self.o.tool_save_output(c["activation_id"], "WR-1", "plan", "# Plan")["path"]
         self.assertTrue(p.endswith(os.path.join("_outputs", "WR-1", "WR-1-plan.md")))
         self.o.activation_done(c["activation_id"], "")
+        self.clear_checker()
         h = next(a for a in self.o.next_work()["activations"] if "Kabir" in a["description"])
         self.assertEqual(self.o.tool_search(h["activation_id"], "hazard identification")["results"], [])
         with self.assertRaises(Conflict):
@@ -257,6 +280,7 @@ class DeliverableTests(Base):
             deliverables=[{"format": "ppt", "title": "Hazard Review for the Safety Board"}])
         self.assertEqual(r["deliverables"], [{"format": "pptx", "title": "Hazard Review for the Safety Board"}])
         self.o.activation_done(c["activation_id"], "")
+        self.clear_checker()
         heads = self.o.next_work()["activations"]
         for h in heads:
             self.assertIn('Deliverables: PPT "Hazard Review for the Safety Board" (not built yet)', h["prompt"])
@@ -299,6 +323,7 @@ class DeliverableTests(Base):
         [c] = self.run_one("chief")
         self.brief(c["activation_id"])
         self.o.activation_done(c["activation_id"], "")
+        self.clear_checker()
         acts = self.o.next_work()["activations"]
         h = next(a for a in acts if "Asha" in a["description"])["activation_id"]
         sheet = {"sheets": [{"name": "Findings", "columns": ["ID", "Finding"], "rows": [["F-1", "Backlog"]]}]}

@@ -3,7 +3,7 @@ import Avatar from './Avatar.jsx'
 
 const KIND_LABEL = {
   request: 'work', brief: 'brief', assign: 'task', status: 'status', blocked: 'blocked', hire: 'hire', instruction: 'instruction',
-  question: 'question', review: 'review', report: 'report', refusal: 'refused', board: 'board', note: 'note', chat: '',
+  question: 'question', review: 'review', check: 'sources', report: 'report', refusal: 'refused', board: 'board', note: 'note', chat: '',
 }
 
 function MessageBubble({ m, kindOf }) {

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useStore } from '../useLive.js'
 import OrgCard from '../components/OrgCard.jsx'
 import RenameButton from '../components/RenameButton.jsx'
+import LinksCard from '../components/LinksCard.jsx'
 import { api } from '../api.js'
 
 export default function OrgChart() {
@@ -19,6 +20,13 @@ export default function OrgChart() {
       <div className="org-wrap card" aria-label="Organisation chart" ref={wrap}>
         <div className="org">
           <OrgCard agent={chief} kind="chief" working={working.has('chief')} />
+          {data.checker && (
+            <>
+              <div className="org-link" aria-hidden="true" />
+              <OrgCard agent={data.checker} kind="checker" working={working.has('checker')} note="Reads the manuals once for every task, before its department starts." />
+              <div className="org-gate muted tiny-text">every task passes here first</div>
+            </>
+          )}
           {depts.length === 0 ? (
             <div className="empty" style={{ marginTop: 28 }}>
               <strong>No departments yet</strong>
@@ -55,8 +63,10 @@ export default function OrgChart() {
           )}
         </div>
       </div>
+      <LinksCard links={data.links} departments={data.departments} />
       <div className="org-legend">
         <span><span className="avatar chief sm">C</span> Chief</span>
+        <span><span className="avatar checker sm">F</span> File Checker</span>
         <span><span className="avatar head sm">H</span> Vertical Head</span>
         <span><span className="avatar sm">S</span> Specialist</span>
         <span><span className="dot working" /> Working now</span>

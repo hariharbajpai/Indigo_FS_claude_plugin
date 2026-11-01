@@ -14,6 +14,8 @@
 
   kb.py board post|inbox|answer|close|show|pending   messages between departments (_team/board.jsonl)
   kb.py mem   add|show|search|forget                 per-department memory (_memory/<dept>.jsonl)
+  kb.py links find|learn|show|forget                 keyword links between departments, learned as the team works
+                                                     (_team/links.json): a word is mentioned -> read that department's part
 
 KB location: --kb, else $SAFETY_KB_DIR, else ./safety-kb
 Layout:      <kb>/<dept>/<doc-id>/{_doc.md, NN-section.md}   (older revisions: <kb>/<dept>/_superseded/)
@@ -1413,6 +1415,306 @@ def mark_memory_stale(kb: Path, doc_id: str, old_rev: str) -> int:
     return n
 
 
+# --------------------------------------------------------------------------- keyword links between departments
+# Departments are connected by words, not by reading everything. When a task mentions "unstable approach", `links find`
+# looks up which departments that term belongs to and returns only the memory notes, open board items and manual
+# sections that match it. The term map teaches itself: terms in a task teach the department that got it, terms in a
+# question teach the department that was asked, and a term nobody has taught yet is looked up once in the saved search
+# index (which departments' manuals use it). Words that point at every department are ignored.
+
+LINK_GENERIC = set("""safety flight flights aircraft airline airlines operation operations operational manual manuals document
+documents procedure procedures process processes report reports review reviews check checks requirement requirements required
+program programme management system systems policy policies training data information general standard standards section chapter
+appendix please make need needs list item items using used use also should would could their there which where when what about
+into over under after before within across between each every other more most some such than then them these those been being have
+has had was were your you can all any new current latest per via based provide provides provided include includes including
+document summary summarise summarize prepare create draft write find show tell give check status""".split())
+LINK_MAX_W = 10.0
+LINK_WEAK = 0.5   # one mention in a task or question; two mentions, or a manual that uses the word, make it a link
+LINK_MAX_TERMS = 5000
+LINK_IGNORE_DAYS = 30
+
+
+def links_path(kb: Path) -> Path:
+    return kb / "_team" / "links.json"
+
+
+def load_links(kb: Path) -> dict:
+    path = links_path(kb)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("terms", {})
+            data.setdefault("ignore", {})
+            return data
+    except (OSError, ValueError):
+        pass
+    return {"terms": {}, "ignore": {}}
+
+
+def save_links(kb: Path, data: dict) -> None:
+    terms = data["terms"]
+    if len(terms) > LINK_MAX_TERMS:  # keep the strongest
+        keep = sorted(terms, key=lambda t: -sum(v["w"] for v in terms[t].values()))[:LINK_MAX_TERMS]
+        data["terms"] = {t: terms[t] for t in keep}
+    path = links_path(kb)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(path)
+
+
+def link_terms(text: str, limit: int = 40) -> list[str]:
+    """The words worth following in a text: stemmed single words and neighbouring pairs, no filler words."""
+    words: list[str | None] = []
+    for w in re.findall(r"[A-Za-z][A-Za-z0-9]*", text or ""):
+        lw = w.lower()
+        acronym = w.isupper() and 3 <= len(w) <= 6
+        if lw in STOP or lw in LINK_GENERIC or (len(lw) < 4 and not acronym):
+            words.append(None)
+        else:
+            words.append(stem(lw))
+    out: list[str] = []
+    for i, w in enumerate(words):
+        if not w:
+            continue
+        out.append(w)
+        if i + 1 < len(words) and words[i + 1]:
+            out.append(f"{w} {words[i + 1]}")
+    return list(dict.fromkeys(out))[:limit]
+
+
+def kb_departments(kb: Path) -> list[str]:
+    if not kb.is_dir():
+        return []
+    return sorted(p.name for p in kb.iterdir() if p.is_dir() and not p.name.startswith(("_", ".")) and p.name != "shared")
+
+
+def _bump(data: dict, term: str, dept: str, delta: float, src: str, absolute: bool = False) -> None:
+    entry = data["terms"].setdefault(term, {}).setdefault(dept, {"w": 0.0, "n": 0, "last": TODAY, "src": []})
+    entry["w"] = round(min(LINK_MAX_W, max(entry["w"], delta) if absolute else entry["w"] + delta), 2)
+    entry["n"] += 1
+    entry["last"] = TODAY
+    if src and src not in entry["src"]:
+        entry["src"] = (entry["src"] + [src])[-3:]
+
+
+def _discover(conn, data: dict, term: str) -> None:
+    """Teach the map from the manuals: which departments use this term? One cheap lookup in the saved index."""
+    try:
+        rows = conn.execute(
+            "SELECT f.dept, COUNT(*) FROM fts JOIN blocks b ON b.id = fts.rowid JOIN files f ON f.id = b.file_id "
+            "WHERE fts MATCH ? AND f.sup = 0 AND f.dept != 'shared' GROUP BY f.dept", (f'"{term}"',)).fetchall()
+    except Exception:
+        return
+    total = sum(n for _, n in rows)
+    if total < 2:
+        return  # too rare to say anything yet; ask again next time
+    strong = [(d, n) for d, n in rows if n >= 2 and n / total >= 0.5]
+    if strong:
+        for d, n in strong:
+            _bump(data, term, d, 1.0 + min(2.0, n / 5), "manuals", absolute=True)
+    elif len(rows) >= 3 and total >= 6:
+        data["ignore"][term] = TODAY  # everywhere, so it points nowhere
+
+
+def _ignored(data: dict, term: str) -> bool:
+    day = data["ignore"].get(term)
+    if not day:
+        return False
+    try:
+        return (dt.date.today() - dt.date.fromisoformat(day)).days < LINK_IGNORE_DAYS
+    except ValueError:
+        return False
+
+
+def links_learn_text(kb: Path, text: str, dept: str, src: str, delta: float = LINK_WEAK) -> int:
+    dept = slugify(dept, 30)
+    terms = link_terms(text)
+    if not terms or dept == "shared":
+        return 0
+    path = links_path(kb)
+    with locked(path):
+        data = load_links(kb)
+        for t in terms:
+            _bump(data, t, dept, delta, src)
+            data["ignore"].pop(t, None)
+        save_links(kb, data)
+    return len(terms)
+
+
+def _term_hits(terms: list[str], text: str) -> list[str]:
+    have = set(tokens(text))
+    return [t for t in terms if all(w in have for w in t.split())]
+
+
+def links_find_data(kb: Path, text: str, me: str | None = None, learn: bool = False, top: int = 3) -> dict:
+    me = slugify(me, 30) if me else None
+    terms = link_terms(text)
+    out: dict = {"terms": terms, "related": []}
+    if not terms or not kb.is_dir():
+        return out
+    depts = kb_departments(kb)
+    low = " ".join((text or "").lower().split())
+    conn = open_index(kb)
+    path = links_path(kb)
+    with locked(path):
+        data = load_links(kb)
+        changed = False
+        if conn is not None:
+            try:
+                refresh_index(kb, conn)
+                def unchecked(t: str) -> bool:  # no manual has vouched for this word yet
+                    return not _ignored(data, t) and not any("manuals" in v["src"] for v in (data["terms"].get(t) or {}).values())
+                for t in [t for t in terms if unchecked(t)][:30]:
+                    _discover(conn, data, t)
+                    changed = True
+            except Exception:
+                pass
+        scores: dict[str, float] = {}
+        via: dict[str, list[str]] = {}
+        for t in terms:
+            by = data["terms"].get(t) or {}
+            total = sum(v["w"] for v in by.values())
+            for d, v in by.items():
+                if d == me or d not in depts:
+                    continue
+                scores[d] = scores.get(d, 0.0) + v["w"] * (v["w"] / total)  # a word owned by one department counts fully
+                via.setdefault(d, []).append(t)
+        for d in depts:  # naming a department is the strongest hint of all
+            if d != me and re.search(rf"(?<![a-z0-9]){re.escape(d.replace('-', ' '))}(?![a-z0-9])", low.replace("-", " ")):
+                scores[d] = scores.get(d, 0.0) + 3.0
+                via.setdefault(d, []).append(d)
+        if learn and me:
+            for t in terms:
+                _bump(data, t, me, LINK_WEAK, "task")
+                data["ignore"].pop(t, None)
+            changed = True
+        if changed:
+            save_links(kb, data)
+    ranked = [(d, sc) for d, sc in sorted(scores.items(), key=lambda x: -x[1]) if sc >= 1.0][:top]
+    memory_all = {d: [r for r in read_jsonl(mem_path(kb, d)) if r["status"] in ("active", "stale")] for d, _ in ranked}
+    team_mem = [r for r in read_jsonl(mem_path(kb, "team")) if r["status"] in ("active", "stale")]
+    board = [r for r in read_jsonl(board_path(kb)) if r["status"] in ("open", "unread")]
+    for d, sc in ranked:
+        hit_terms = list(dict.fromkeys(via[d]))
+        entry = {"dept": d, "score": round(sc, 2), "via": hit_terms[:6], "memory": [], "board": [], "manuals": []}
+        scored_mem = []
+        for r in memory_all[d] + team_mem:
+            h = _term_hits(hit_terms, r["text"] + " " + r.get("src", ""))
+            if h:
+                scored_mem.append((len(h), r))
+        for _, r in sorted(scored_mem, key=lambda x: -x[0])[:3]:
+            entry["memory"].append({"id": r["id"], "kind": r["kind"], "text": r["text"], "src": r.get("src", ""),
+                                    "verify": r["status"] == "stale"})
+        for r in board:
+            if (r["from"] == d or r["to"] == d) and (r["to"] == me or _term_hits(hit_terms, r["subject"] + " " + r["text"])):
+                entry["board"].append({"id": r["id"], "from": r["from"], "to": r["to"], "kind": r["kind"],
+                                       "subject": r["subject"], "text": r["text"][:240]})
+        entry["board"] = entry["board"][:3]
+        ns = argparse.Namespace(include_superseded=False, dept=[d], doc=None, top=2, query=" ".join(hit_terms[:6]))
+        q = tokens(ns.query)
+        if q:
+            found = None
+            if conn is not None:
+                try:
+                    found = search_index(conn, kb, q, ns)
+                except Exception:
+                    found = None
+            if found is None:
+                found = search_scan(kb, q, ns)
+            for _, b in found[0][:2]:
+                flat = re.sub(r"\s+", " ", b["text"])
+                m = b["meta"]
+                entry["manuals"].append({"doc": m.get("doc"), "revision": m.get("revision"), "section": b["section"],
+                                         "page": b["page"], "file": Path(b["path"]).relative_to(kb).as_posix(),
+                                         "line": b["line"], "snippet": flat[:200]})
+        out["related"].append(entry)
+    if conn is not None:
+        conn.close()
+    return out
+
+
+def links_find_cmd(a: argparse.Namespace) -> None:
+    kb = kb_root(a.kb)
+    res = links_find_data(kb, a.text, a.dept, a.learn, a.top)
+    if a.json:
+        print(json.dumps(res, indent=1, ensure_ascii=False))
+        return
+    if not res["related"]:
+        print("links: no other department is tied to the words in this text")
+        return
+    print("Linked by keywords (read only what matches; confirm in the manual):")
+    for e in res["related"]:
+        print(f"- {e['dept']}  via: {', '.join(e['via'])}")
+        for m in e["memory"]:
+            print(f"    memory ({m['kind']}): {m['text']}  — src: {m['src']}{'  [VERIFY]' if m['verify'] else ''}")
+        for b in e["board"]:
+            print(f"    board [{b['id']}] {b['from']} → {b['to']}: {b['subject']}")
+        for m in e["manuals"]:
+            pg = f"p.{m['page']}" if m["page"] else "p.n/a"
+            print(f"    manual: {m['doc']} rev {m['revision']} §{m['section']} {pg}  {kb / m['file']}:{m['line']}")
+
+
+def links_learn_cmd(a: argparse.Namespace) -> None:
+    kb = kb_root(a.kb)
+    if bool(a.term) == bool(a.text):
+        die("give either --term or --text")
+    if a.term:
+        term = " ".join(tokens(a.term))
+        if not term:
+            die("that term has no searchable words.")
+        dept = slugify(a.dept, 30)
+        with locked(links_path(kb)):
+            data = load_links(kb)
+            _bump(data, term, dept, 1.0 if a.weight is None else a.weight, a.src or "owner")
+            data["ignore"].pop(term, None)
+            save_links(kb, data)
+        print(f"learned: {a.term} -> {dept}")
+        return
+    n = links_learn_text(kb, a.text, a.dept, a.src or "task", LINK_WEAK if a.weight is None else a.weight)
+    print(f"learned {n} term(s) for {slugify(a.dept, 30)}")
+
+
+def links_show_cmd(a: argparse.Namespace) -> None:
+    kb = kb_root(a.kb)
+    data = load_links(kb)
+    rows = []
+    for t, by in data["terms"].items():
+        for d, v in by.items():
+            if not a.dept or d in [slugify(x, 30) for x in a.dept]:
+                rows.append({"term": t, "dept": d, "weight": v["w"], "seen": v["n"], "last": v["last"], "src": v["src"]})
+    rows.sort(key=lambda r: (-r["weight"], r["term"]))
+    rows = rows[: a.limit]
+    if a.json:
+        print(json.dumps({"links": rows, "ignored": sorted(data["ignore"])}, indent=1, ensure_ascii=False))
+        return
+    if not rows:
+        print("links: nothing learned yet")
+        return
+    for r in rows:
+        print(f"{r['term']:<28} -> {r['dept']:<20} weight {r['weight']:<5} seen {r['seen']}x  ({', '.join(r['src'])})")
+
+
+def links_forget_cmd(a: argparse.Namespace) -> None:
+    kb = kb_root(a.kb)
+    t = " ".join(tokens(a.term))
+    with locked(links_path(kb)):
+        data = load_links(kb)
+        by = data["terms"].get(t)
+        if not by:
+            die(f"no learned link for '{a.term}'.")
+        if a.dept:
+            by.pop(slugify(a.dept, 30), None)
+            if not by:
+                data["terms"].pop(t, None)
+        else:
+            data["terms"].pop(t, None)
+        data["ignore"][t] = TODAY  # do not re-learn it straight away
+        save_links(kb, data)
+    print(f"forgot link(s) for '{a.term}'")
+
+
 # --------------------------------------------------------------------------- cli
 
 def main() -> None:
@@ -1521,6 +1823,31 @@ def main() -> None:
     p.add_argument("id")
     p.add_argument("--reason")
     p.set_defaults(fn=mem_forget)
+
+    links = sub.add_parser("links", help="keyword links between departments (self-learning)").add_subparsers(dest="lcmd", required=True)
+    p = links.add_parser("find", parents=[common], help="which other departments does this text point at, and what do they know about it?")
+    p.add_argument("--text", required=True, help="the task, question or request (its words are what counts)")
+    p.add_argument("--dept", help="the asking department (left out of the results)")
+    p.add_argument("--learn", action="store_true", help="also teach the map that these words belong to --dept")
+    p.add_argument("--top", type=int, default=3, help="most related departments to show")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=links_find_cmd)
+    p = links.add_parser("learn", parents=[common], help="teach the map: these words belong to this department")
+    p.add_argument("--dept", required=True)
+    p.add_argument("--term")
+    p.add_argument("--text")
+    p.add_argument("--weight", type=float, help="default: 1.0 for --term (taught by hand), 0.5 for --text (a task or question)")
+    p.add_argument("--src")
+    p.set_defaults(fn=links_learn_cmd)
+    p = links.add_parser("show", parents=[common], help="what the map has learned")
+    p.add_argument("--dept", action="append")
+    p.add_argument("--limit", type=int, default=60)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=links_show_cmd)
+    p = links.add_parser("forget", parents=[common], help="drop a wrong link")
+    p.add_argument("term")
+    p.add_argument("--dept")
+    p.set_defaults(fn=links_forget_cmd)
 
     args = ap.parse_args()
     args.fn(args)

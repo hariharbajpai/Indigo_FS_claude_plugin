@@ -1,4 +1,4 @@
-// API client for backend/API.md (v0.5.0). getState() composes several endpoints into the shape the views use.
+// API client for backend/API.md (v0.10.0). getState() composes several endpoints into the shape the views use.
 // Every call carries the dashboard token from the link /flight-safety-agents:start gives the Owner (?token=...).
 const TOKEN_KEY = 'fsa-dashboard-token'
 
@@ -47,8 +47,8 @@ const json = (method, data) => ({
 const NO_ACTIVITY = { running: [], waiting: [], recent: [] }
 
 const EMPTY = {
-  chief: null, departments: [], agents: [], work_requests: [],
-  briefs: [], tasks: [], messages: [], files: [], stats: null, activity: NO_ACTIVITY,
+  chief: null, checker: null, departments: [], agents: [], work_requests: [],
+  briefs: [], tasks: [], messages: [], files: [], stats: null, activity: NO_ACTIVITY, models: null, links: [],
 }
 
 // Fill missing collections so views never crash on a partial payload.
@@ -59,6 +59,7 @@ export function normalizeState(s) {
   }
   const a = out.activity || {}
   out.activity = { running: a.running || [], waiting: a.waiting || [], recent: a.recent || [] }
+  if (!Array.isArray(out.links)) out.links = []
   return out
 }
 
@@ -83,10 +84,11 @@ export const adaptMessage = (m) => ({
 export const adaptRequest = (w, report) => ({ ...w, progress: w.progress?.percent ?? 0, report: report ? report.body : null })
 
 // Build the view state from the REST endpoints.
-export function buildState({ overview, org, departments, requests, details, tasks, messages }) {
+export function buildState({ overview, org, departments, requests, details, tasks, messages, models = null, links = null }) {
   const agents = new Map()
   const add = (a) => a && agents.set(a.id, adaptAgent(a))
   add(org.chief)
+  add(org.checker)
   for (const row of org.departments) { add(row.head); (row.agents || []).forEach(add) }
   const agentName = (id) => agents.get(id)?.name || id
   const taskList = tasks.map(adaptTask).map((t) => ({
@@ -95,6 +97,9 @@ export function buildState({ overview, org, departments, requests, details, task
   const reports = Object.fromEntries(details.map((d) => [d.request.id, d.report]))
   return normalizeState({
     chief: org.chief,
+    checker: org.checker || null,
+    models,
+    links: links?.links || [],
     departments,
     agents: [...agents.values()],
     work_requests: requests.map((w) => adaptRequest(w, reports[w.id])),
@@ -109,12 +114,13 @@ export function buildState({ overview, org, departments, requests, details, task
 }
 
 async function loadState() {
-  const [overview, org, departments, requests, tasks, messages] = await Promise.all([
+  const [overview, org, departments, requests, tasks, messages, models, links] = await Promise.all([
     request('/overview'), request('/org?include_retired=true'), request('/departments?include_retired=true'),
     request('/work-requests'), request('/tasks'), request('/messages'),
+    request('/models').catch(() => null), request('/links').catch(() => null), // older servers do not have these
   ])
   const details = await Promise.all(requests.map((w) => request(`/work-requests/${encodeURIComponent(w.id)}`)))
-  return buildState({ overview, org, departments, requests: requests.slice().reverse(), details, tasks, messages })
+  return buildState({ overview, org, departments, requests: requests.slice().reverse(), details, tasks, messages, models, links })
 }
 
 export const api = {
@@ -143,6 +149,8 @@ export const api = {
     return request(`/departments/${encodeURIComponent(id)}/replace`, { method: 'POST', body: fd })
   },
   retireDepartment: (id) => request(`/departments/${encodeURIComponent(id)}/retire`, { method: 'POST' }),
+  // payload: {preset} or {roles: {chief|checker|head|hired|all: inherit|haiku|sonnet|opus}}
+  setModels: (payload) => request('/models', json('POST', payload)),
   renameAgent: (id, name) => request(`/agents/${encodeURIComponent(id)}/rename`, json('POST', { name })),
   renameDepartment: (id, name) => request(`/departments/${encodeURIComponent(id)}/rename`, json('POST', { name })),
 }

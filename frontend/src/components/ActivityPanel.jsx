@@ -1,5 +1,6 @@
 import Avatar from './Avatar.jsx'
 import { Icon } from './Icons.jsx'
+import { prettyModel } from '../models.js'
 
 const ago = (ts) => {
   if (!ts) return ''
@@ -24,7 +25,7 @@ export default function ActivityPanel({ activity, agents = [] }) {
             {running.map((a) => (
               <li key={a.activation_id}>
                 <Avatar name={a.agent_name} kind={kind(a.agent_id)} size="sm" />
-                <div className="who"><strong>{a.agent_name}</strong><div className="small muted">started {ago(a.started_at)}</div></div>
+                <div className="who"><strong>{a.agent_name}</strong><div className="small muted">started {ago(a.started_at)}{a.model ? ` · ${prettyModel(a.model)}` : ''}</div></div>
                 <span className="dot working" title="working" />
               </li>
             ))}
@@ -52,7 +53,7 @@ export default function ActivityPanel({ activity, agents = [] }) {
               <li key={r.id}>
                 <Avatar name={r.agent_name} kind={kind(r.agent_id)} size="sm" />
                 <div className="who">
-                  <strong>{r.agent_name}</strong> <span className="small muted">· {r.status} · {ago(r.ended_at)}</span>
+                  <strong>{r.agent_name}</strong> <span className="small muted">· {r.status} · {ago(r.ended_at)}</span>{r.model && <span className="chip model">{prettyModel(r.model)}</span>}
                   {r.report && <div className="report-text">{r.report}</div>}
                 </div>
               </li>

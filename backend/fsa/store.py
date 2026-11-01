@@ -3,7 +3,8 @@ import json
 import re
 from datetime import datetime, timezone
 
-from . import CHIEF_ID, CHIEF_NAME, CHIEF_ROLE, HIRE_CAP, SYSTEM_ID
+from . import (CHECKER_ID, CHECKER_NAME, CHECKER_ROLE, CHIEF_ID, CHIEF_NAME, CHIEF_ROLE, HIRE_CAP,
+               SYSTEM_ID)
 from .db import Database
 
 TASK_STATUSES = ("todo", "in_progress", "review", "blocked", "done")
@@ -38,6 +39,7 @@ class Store:
     def __init__(self, path=None):
         self.db = Database(path)
         self.seed_chief()
+        self.seed_checker()
 
     def close(self):
         self.db.close()
@@ -130,6 +132,20 @@ class Store:
                       (CHIEF_ID, CHIEF_NAME, CHIEF_ROLE, "chief", None, "active", now()))
             self.add_event("agent.created", {"id": CHIEF_ID})
 
+    def seed_checker(self):
+        """The File Checker sits after the Chief: it reads the manuals once for each task and hands the
+        department a source pack. Permanent, like the Chief; the Owner can rename it."""
+        with self.db.tx() as c:
+            if self.db.one("SELECT id FROM agents WHERE id=?", (CHECKER_ID,)):
+                return
+            c.execute("INSERT INTO agents(id,name,role,kind,dept,status,created_at) VALUES(?,?,?,?,?,?,?)",
+                      (CHECKER_ID, CHECKER_NAME, CHECKER_ROLE, "checker", None, "active", now()))
+            self.add_event("agent.created", {"id": CHECKER_ID})
+
+    def checker_active(self):
+        a = self.db.one("SELECT status FROM agents WHERE id=?", (CHECKER_ID,))
+        return bool(a) and a["status"] == "active"
+
     def get_agent(self, aid):
         a = self.db.one("SELECT * FROM agents WHERE id=?", (aid,))
         if not a:
@@ -146,7 +162,7 @@ class Store:
         return self.db.q(sql + " ORDER BY rowid", args)
 
     def _new_agent_id(self):
-        n = self.db.one("SELECT COUNT(*) n FROM agents")["n"]
+        n = self.db.one("SELECT COUNT(*) n FROM agents WHERE kind!='checker'")["n"]  # ids stay ag-1, ag-2...
         while self.db.one("SELECT 1 FROM agents WHERE id=?", (f"ag-{n}",)):
             n += 1
         return f"ag-{n}"
@@ -205,6 +221,8 @@ class Store:
         a = self.get_agent(aid)
         if a["kind"] == "chief":
             raise Conflict("The Chief of Flight Safety cannot be retired")
+        if a["kind"] == "checker":
+            raise Conflict("The File Checker cannot be retired")
         if a["kind"] == "head":
             d = self.db.one("SELECT status FROM departments WHERE id=?", (a["dept"],))
             if d and d["status"] == "active":
@@ -313,7 +331,8 @@ class Store:
             out.append({"department": d, "head": self.get_agent(d["head_id"]),
                         "agents": self.db.q(sql + " ORDER BY rowid", (d["id"],)),
                         "active_count": self.active_count(d["id"]), "hire_cap": HIRE_CAP})
-        return {"chief": self.get_agent(CHIEF_ID), "departments": out}
+        return {"chief": self.get_agent(CHIEF_ID), "checker": self.db.one("SELECT * FROM agents WHERE id=?",
+                                                                            (CHECKER_ID,)), "departments": out}
 
     # ---------- work requests / briefs ----------
     @staticmethod
@@ -407,7 +426,7 @@ class Store:
                 "work_request_id": r["work_request_id"], "created_at": r["created_at"],
                 "updated_at": r["updated_at"],
                 "notes": self.db.q("SELECT * FROM task_notes WHERE task_id=? ORDER BY id", (tid,)),
-                "message_count": self.count_task_messages(tid)}
+                "message_count": self.count_task_messages(tid), "source_pack": self.pack_summary(tid)}
 
     def create_task(self, title, dept, description="", acceptance="", work_request_id=None):
         d = self.get_department(dept)
@@ -506,6 +525,60 @@ class Store:
             args.append(work_request_id)
         return [self._file(f) for f in self.db.q(sql + " ORDER BY id", args)]
 
+    # ---------- source packs (what the File Checker read once for a task) ----------
+    def save_source_pack(self, task_id, agent_id, summary, coverage, issues, sources):
+        t = self.get_task(task_id)
+        with self.db.tx() as c:
+            old = self.db.one("SELECT version FROM source_packs WHERE task_id=?", (task_id,))
+            c.execute("INSERT INTO source_packs(task_id,work_request_id,agent_id,summary,coverage,issues,sources,"
+                      "version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET "
+                      "agent_id=excluded.agent_id, summary=excluded.summary, coverage=excluded.coverage, "
+                      "issues=excluded.issues, sources=excluded.sources, version=excluded.version, "
+                      "updated_at=excluded.updated_at",
+                      (task_id, t["work_request_id"], agent_id, summary or "", coverage, json.dumps(issues),
+                       json.dumps(sources), (old["version"] + 1) if old else 1, now(), now()))
+            self.add_event("source_pack.saved", {"task_id": task_id, "work_request_id": t["work_request_id"],
+                                                 "coverage": coverage})
+        return self.get_source_pack(task_id), bool(old)
+
+    @staticmethod
+    def _pack(r):
+        return {"task_id": r["task_id"], "work_request_id": r["work_request_id"], "agent_id": r["agent_id"],
+                "summary": r["summary"], "coverage": r["coverage"], "issues": json.loads(r["issues"]),
+                "sources": json.loads(r["sources"]), "version": r["version"], "updated_at": r["updated_at"]}
+
+    def get_source_pack(self, task_id):
+        r = self.db.one("SELECT * FROM source_packs WHERE task_id=?", (task_id,))
+        return self._pack(r) if r else None
+
+    def list_source_packs(self, work_request_id=None):
+        sql, args = "SELECT * FROM source_packs", []
+        if work_request_id:
+            sql += " WHERE work_request_id=?"
+            args.append(work_request_id)
+        return [self._pack(r) for r in self.db.q(sql + " ORDER BY rowid", args)]
+
+    def pack_summary(self, task_id):
+        r = self.db.one("SELECT coverage, issues, sources, version FROM source_packs WHERE task_id=?", (task_id,))
+        if not r:
+            return None
+        return {"coverage": r["coverage"], "sources": len(json.loads(r["sources"])),
+                "issues": len(json.loads(r["issues"])), "version": r["version"]}
+
+    def tasks_awaiting_pack(self):
+        """Open tasks of briefed work requests that the File Checker has not covered yet (oldest first)."""
+        rows = self.db.q("SELECT seq FROM tasks WHERE status IN ('todo','in_progress') AND work_request_id IS NOT NULL"
+                         " AND ('TK-' || seq) NOT IN (SELECT task_id FROM source_packs) ORDER BY seq")
+        return [self.get_task(f"TK-{r['seq']}") for r in rows]
+
+    # ---------- reads ledger (an agent never re-reads the same part in one run) ----------
+    def note_read(self, activation_id, file, line):
+        """Record a read; True when this run had already read that file from that line."""
+        with self.db.tx() as c:
+            cur = c.execute("INSERT OR IGNORE INTO reads(activation,file,line,ts) VALUES(?,?,?,?)",
+                            (activation_id, file, int(line or 0), now()))
+            return cur.rowcount == 0
+
     # ---------- meta (cursors) ----------
     def get_meta(self, key, default=None):
         r = self.db.one("SELECT value FROM meta WHERE key=?", (key,))
@@ -517,12 +590,14 @@ class Store:
                       (key, str(value)))
 
     # ---------- activations (one subagent run) ----------
-    def create_activation(self, aid, agent_id, work_request_id, first_message, last_message):
-        """watermark = the newest message id when the run started (orders runs against messages)."""
+    def create_activation(self, aid, agent_id, work_request_id, first_message, last_message, model=None):
+        """watermark = the newest message id when the run started (orders runs against messages).
+        model = the Claude model the run was asked to use (None: whatever the session uses)."""
         with self.db.tx() as c:
             c.execute("INSERT INTO activations(id,agent_id,status,work_request_id,first_message,last_message,"
-                      "watermark,started_at) VALUES(?,?,'running',?,?,?,?,?)",
-                      (aid, agent_id, work_request_id, first_message, last_message, self.last_message_id(), now()))
+                      "watermark,started_at,model) VALUES(?,?,'running',?,?,?,?,?,?)",
+                      (aid, agent_id, work_request_id, first_message, last_message, self.last_message_id(), now(),
+                       model))
             self.add_event("activation.started", {"id": aid, "agent_id": agent_id})
         return self.get_activation(aid)
 
@@ -567,7 +642,8 @@ class Store:
         for r in self.db.q("SELECT status, COUNT(*) n FROM tasks GROUP BY status"):
             counts[r["status"]] = r["n"]
         wrs = self.list_work_requests()
-        return {"chief": self.get_agent(CHIEF_ID),
+        return {"chief": self.get_agent(CHIEF_ID), "checker": self.db.one("SELECT * FROM agents WHERE id=?",
+                                                                            (CHECKER_ID,)),
                 "counts": {"departments": len(self.list_departments()),
                            "agents": len(self.list_agents()),
                            "work_requests": len(wrs), "tasks": counts,

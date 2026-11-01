@@ -1,11 +1,11 @@
-# Flight Safety Command API (v0.9.0)
+# Flight Safety Command API (v0.10.0)
 
 Served by `backend/fsa/server.py` (Python standard library) together with the dashboard UI. `/flight-safety-agents:start` starts it on `http://127.0.0.1:4810` (or the next free port) and gives the Owner a link with `?token=...`.
 JSON everywhere except `POST /api/departments` (multipart) and `GET /api/events` (SSE). One local Owner.
 
 **Access.** The server binds to 127.0.0.1 and answers only local `Host` headers (403 otherwise). Every `/api/*` call except `/api/health` needs the dashboard token as header `X-FSA-Token: <token>` or query `?token=<token>` (401 otherwise). No CORS: the UI is served from the same origin.
 
-**Agent mode.** In the plugin the Chief, Vertical Heads and specialists are Claude Code subagents run by the MCP server's work loop (`next_work`). Work and instructions posted here are queued for them; they act when the Owner runs `/flight-safety-agents:run` (responses carry a `hint` saying so).
+**Agent mode.** In the plugin the Chief, the File Checker, Vertical Heads and specialists are Claude Code subagents run by the MCP server's work loop (`next_work`). Work and instructions posted here are queued for them; they act when the Owner runs `/flight-safety-agents:run` (responses carry a `hint` saying so).
 Timestamps are ISO-8601 UTC strings (`2026-10-27T04:17:16Z`). IDs are strings: `WR-1` work request, `TK-1` task, `ag-1` agent (Chief is `chief`), `dept-slug` for departments (e.g. `engine-maintenance`), messages and events use integers.
 
 Errors: `{"detail": "clear message"}` with 400 (bad input), 401 (token), 403 (non-local host), 404 (unknown id), 405 (method), 409 (refused: Chief retire, hire cap, duplicate, bad state), 422 (missing field / bad JSON).
@@ -13,7 +13,7 @@ Errors: `{"detail": "clear message"}` with 400 (bad input), 401 (token), 403 (no
 ## Shapes
 
 ```jsonc
-Agent      { "id":"ag-3","name":"Asha Verma","role":"Vertical Head","kind":"chief|head|hired","dept":"engine-maintenance"|null,"status":"active|retired","created_at":"..." }
+Agent      { "id":"ag-3","name":"Asha Verma","role":"Vertical Head","kind":"chief|checker|head|hired","dept":"engine-maintenance"|null,"status":"active|retired","created_at":"..." }
 Department { "id":"engine-maintenance","name":"Engine Maintenance","head_id":"ag-2","head_name":"Asha Verma","status":"active|retired","created_at":"..." }
 WorkRequest{ "id":"WR-1","text":"...","status":"Received|Briefed|In progress|Done","created_at":"...","updated_at":"...",
              "brief_version":2|null,
@@ -29,14 +29,25 @@ Task       { "id":"TK-1","title":"...","description":"...","acceptance":"...","d
              "agent_id":"ag-5"|null,"agent_name":"..."|null,"status":"todo|in_progress|review|blocked|done",
              "work_request_id":"WR-1","created_at":"...","updated_at":"...",
              "notes":[{"id":1,"task_id":"TK-1","author":"ag-2","status":"in_progress","note":"...","ts":"..."}],  // only in detail/list responses (always included)
-             "message_count":3 }
+             "message_count":3,
+             "source_pack":null|{"coverage":"full|partial|none","sources":4,"issues":1,"version":1} }  // the File Checker's pack for the task; null = not checked yet, the department waits
+SourcePack { "task_id":"TK-1","work_request_id":"WR-1","agent_id":"checker","summary":"...","coverage":"full|partial|none",
+             "issues":["Engine Manual rev ? is a superseded or withdrawn revision"],"version":1,"updated_at":"...",
+             "sources":[{"file":"engine-maintenance/engine-manual/01-borescope.md","line":12,"to_line":19,"doc":"Engine Manual","revision":"Rev 5",
+                         "section":"1.1 Borescope intervals","page":9,"dept":"engine-maintenance","why":"...","extract":"text read once","truncated":false}] }
+Models     { "session_model":"claude-sonnet-5-5"|null,"session_reported_at":"..."|null,
+             "roles":{"chief|checker|head|hired":{"setting":"inherit|haiku|sonnet|opus","effective":"opus"}},
+             "preset":"recommended|best|economy|inherit"|null,"hint":"...",
+             "options":[{"id":"opus","note":"..."}],"presets":[{"id":"recommended","label":"Recommended","note":"...","roles":{}}] }
+Link       { "term":"unstable approach","dept":"fdm","weight":2.4,"seen":5,"last":"2026-11-01","src":["manuals","task"] }
 Message    { "id":10,"sender":"owner|chief|ag-2","sender_name":"Owner","recipient":"chief|ag-2|owner","recipient_name":"...",
              "dept":"engine-maintenance"|null,"task_id":"TK-1"|null,"work_request_id":"WR-1"|null,
-             "kind":"request|brief|assign|status|blocked|hire|instruction|question|review|board|report|refusal|chat|note","body":"...","ts":"..." }
-Event      { "id":55,"type":"work_request.created|work_request.updated|brief.created|task.created|task.updated|message.created|agent.created|agent.hired|agent.hire_refused|agent.retired|department.created|department.updated|department.retired|report.posted|activation.started|activation.done|activation.cancelled|output.saved|file.created|agent.renamed|department.renamed","ts":"...","data":{...} }
+             "kind":"request|brief|assign|check|status|blocked|hire|instruction|question|review|board|report|refusal|chat|note","body":"...","ts":"..." }
+Event      { "id":55,"type":"work_request.created|work_request.updated|brief.created|task.created|task.updated|message.created|agent.created|agent.hired|agent.hire_refused|agent.retired|department.created|department.updated|department.retired|report.posted|activation.started|activation.done|activation.cancelled|output.saved|file.created|agent.renamed|department.renamed|source_pack.saved|models.changed","ts":"...","data":{...} }
 Activity   { "running":[{"activation_id":"act-1a2b3c4d","agent_id":"ag-2","agent_name":"Asha Verma","started_at":"..."}],
              "waiting":[{"agent_id":"chief","agent_name":"Dhruv Rebbapragada","messages":1}],
-             "recent":[{"id":"act-...","agent_id":"chief","agent_name":"...","status":"done|cancelled","started_at":"...","ended_at":"...","report":"..."}] }
+             "recent":[{"id":"act-...","agent_id":"chief","agent_name":"...","status":"done|cancelled","started_at":"...","ended_at":"...","report":"...","model":"opus"|null}] }
+             // running[].model and recent[].model: the model the run was asked to use (null = the session's)
 ```
 
 ## Endpoints
@@ -55,9 +66,9 @@ Activity   { "running":[{"activation_id":"act-1a2b3c4d","agent_id":"ag-2","agent
 Which subagents are running now in Claude Code, which have work waiting (run `/flight-safety-agents:run`), and the last runs with their reports.
 
 ### GET /api/org
-Org chart, Chief at the top.
+Org chart, Chief at the top, then the File Checker (every task passes through it before its department starts).
 ```json
-{ "chief": Agent,
+{ "chief": Agent, "checker": Agent,
   "departments": [ { "department": Department, "head": Agent, "agents": [Agent /* active hired agents */], "active_count": 3, "hire_cap": 5 } ] }
 ```
 Add `?include_retired=true` to include retired departments.
@@ -75,6 +86,15 @@ Missing `text` -> 422; blank text -> 400.
 ### POST /api/instructions
 Body `{ "target": "chief" | "<dept id>", "text": "...", "work_request_id": "WR-1" /* optional, defaults to latest open request */ }` -> 201 `{ "message": Message, "brief": null, "blocked_tasks": [], "hint": "..." }`.
 Delivered as a message from `owner` (to a department: to its Vertical Head, with a copy to the Chief). The Chief re-plans when the work loop runs: new brief version, conflicting in-flight tasks become `blocked` with a note, new tasks added. Unknown dept -> 404; blank text -> 400; missing field -> 422.
+
+### GET /api/models  ->  `Models`
+Which Claude each kind of agent uses, and the Claude Code session's own model as last reported by the work loop (`next_work` with `session_model`). `inherit` = the agent uses the session's model.
+### POST /api/models  ->  `Models`
+Body `{ "preset": "recommended|best|economy|inherit" }` or `{ "roles": { "chief|checker|head|hired|all": "inherit|haiku|sonnet|opus" } }`. Applies from the next run: each activation then carries `model` and the work loop passes it to the Agent call. Neither field -> 422; unknown preset/role/model -> 400. `models.changed` event.
+### GET /api/links?limit=60  ->  `{ "links":[Link], "ignored":["term"] }`
+The keyword links the team has learned between departments (`kb.py links`): a word -> the department it belongs to. Tasks and questions teach it, the manuals confirm it.
+### GET /api/source-packs?work_request_id=  ->  `[SourcePack]`
+The File Checker's packs: the manual sections each task needs, read once, with exact document, revision, section and page, plus the issues it flagged.
 
 ### GET /api/files?work_request_id=  ->  `[File]`
 PowerPoint, Word and Excel files the agents built (oldest first).
@@ -124,7 +144,7 @@ data: {"id":55,"type":"message.created","ts":"...","data":{...}}
 ```
 Send `Last-Event-ID` (or `?since_id=55`) to replay missed events. A `: keepalive` comment is sent every 15s. The server also polls the DB every 0.5s so every change is pushed within 3s. UI pattern: on any event refetch the affected resource (`task.*` -> /api/tasks, `message.created` -> /api/messages, `brief.created`/`work_request.*` -> /api/work-requests, `agent.*`/`department.*` -> /api/org).
 
-### GET /api/health  ->  `{ "ok": true, "version": "0.9.0" }`  (no token needed)
+### GET /api/health  ->  `{ "ok": true, "version": "0.10.0" }`  (no token needed)
 
 ### Other paths
 Anything outside `/api/` serves the dashboard UI (`backend/fsa/web`); unknown paths return `index.html` so the UI can route itself.

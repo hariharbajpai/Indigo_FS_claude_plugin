@@ -126,7 +126,8 @@ kb.py board show --open        # everything still open
 Each department has a small memory (`safety-kb/_memory/<dept>.jsonl`; `team` for shared notes). It holds how *this operator* works: terms, where answers live, preferences, decisions, corrections. It is **not** a second copy of the manuals.
 
 ```
-kb.py mem show --dept sms --dept team                     # at the start of a run
+kb.py links find --dept sms --learn --text "<the request>"   # at the start of a run: only what matches (see Keyword links)
+kb.py mem show --dept sms --dept team                     # everything one department has learned (rarely needed)
 kb.py mem add  --dept sms --kind source-map --text "Report acknowledgement deadline: SMS Manual §3.1" \
                --src "[SMS Manual Rev 5 §3.1, p.12]" --doc sms-manual --rev "Rev 5"
 kb.py mem search "acknowledgement"      kb.py mem forget <id> --reason "..."
@@ -143,6 +144,21 @@ kb.py mem search "acknowledgement"      kb.py mem forget <id> --reason "..."
 **Never record:** personal data (names of crew, employees or reporters; the script also rejects emails and phone numbers), raw FDM figures, copied manual text, guesses, or anything that only matters for this one question.
 
 **Tell the user** in the answer what you remembered or forgot (`Memory: +1 source-map "..."`). They can inspect everything with `mem show` and remove anything with `mem forget`.
+
+## Keyword links: departments connect by words, not by reading everything
+
+Reading the whole board and all memory on every run is slow and mostly irrelevant. `links find` reads only what a word triggers:
+
+```
+kb.py links find --dept sms --learn --text "Assess the rising unstable approach rate at Delhi"
+kb.py links show                       # what has been learned (word -> department)
+kb.py links learn --dept fdm --term "unstable approach"       # teach it by hand
+kb.py links forget "unstable approach" --dept sms             # drop a wrong link
+```
+
+- It picks the significant words of the text (single words and neighbouring pairs, no filler) and looks up which **other** departments they belong to. For each related department it shows only the memory notes, open board items and the best manual sections that match those words (with `file:line` to read).
+- **It teaches itself** (`_team/links.json`). `--learn` records that the words of your task belong to your department; the Chief's tasks and the questions departments ask each other teach it too; a word nobody has taught yet is looked up once in the saved search index (which departments' manuals use it). Words that point at every department (like "safety" or "procedure") are ignored, and naming a department ("check SMS's hazard register") is the strongest hint.
+- It is a hint, like memory: confirm in the manual before relying on it. A wrong link: `links forget`.
 
 ## Saving work products
 

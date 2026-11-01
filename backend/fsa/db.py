@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS departments(
   status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS agents(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('chief','head','hired')),
+  kind TEXT NOT NULL CHECK(kind IN ('chief','checker','head','hired')),
   dept TEXT, status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','retired')),
   reason TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS work_requests(
@@ -42,11 +42,19 @@ CREATE TABLE IF NOT EXISTS activations(
   id TEXT PRIMARY KEY, agent_id TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','cancelled')),
   work_request_id TEXT, first_message INTEGER, last_message INTEGER, watermark INTEGER NOT NULL DEFAULT 0,
-  started_at TEXT NOT NULL, ended_at TEXT, report TEXT);
+  started_at TEXT NOT NULL, ended_at TEXT, report TEXT, model TEXT);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS files(
   id INTEGER PRIMARY KEY AUTOINCREMENT, work_request_id TEXT, task_id TEXT, format TEXT NOT NULL,
   title TEXT NOT NULL, path TEXT NOT NULL UNIQUE, size INTEGER, created_by TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS source_packs(
+  task_id TEXT PRIMARY KEY, work_request_id TEXT, agent_id TEXT, summary TEXT NOT NULL DEFAULT '',
+  coverage TEXT NOT NULL DEFAULT 'full', issues TEXT NOT NULL DEFAULT '[]', sources TEXT NOT NULL DEFAULT '[]',
+  version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reads(
+  activation TEXT NOT NULL, file TEXT NOT NULL, line INTEGER NOT NULL, ts TEXT NOT NULL,
+  PRIMARY KEY(activation, file, line));
+CREATE INDEX IF NOT EXISTS ix_pack_wr ON source_packs(work_request_id);
 CREATE INDEX IF NOT EXISTS ix_msg_task ON messages(task_id);
 CREATE INDEX IF NOT EXISTS ix_msg_recipient ON messages(recipient);
 CREATE INDEX IF NOT EXISTS ix_task_wr ON tasks(work_request_id);
@@ -81,6 +89,35 @@ class Database:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(briefs)")}
         if "deliverables" not in cols:
             self.conn.execute("ALTER TABLE briefs ADD COLUMN deliverables TEXT NOT NULL DEFAULT '[]'")
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(activations)")}
+        if "model" not in cols:
+            self.conn.execute("ALTER TABLE activations ADD COLUMN model TEXT")
+        self._allow_checker_kind()
+
+    def _allow_checker_kind(self):
+        """agents.kind used to allow only chief/head/hired; rebuild the table once so the File Checker fits.
+        Both server processes may get here at the same time, so the check is repeated inside the write lock."""
+        def old():
+            sql = self.conn.execute("SELECT sql FROM sqlite_master WHERE name='agents'").fetchone()
+            return bool(sql) and "'checker'" not in sql[0]
+        if not old():
+            return
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            if old():
+                self.conn.execute("""CREATE TABLE agents_new(
+                  id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
+                  kind TEXT NOT NULL CHECK(kind IN ('chief','checker','head','hired')),
+                  dept TEXT, status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','retired')),
+                  reason TEXT, created_at TEXT NOT NULL)""")
+                self.conn.execute("INSERT INTO agents_new(id,name,role,kind,dept,status,reason,created_at) "
+                                  "SELECT id,name,role,kind,dept,status,reason,created_at FROM agents ORDER BY rowid")
+                self.conn.execute("DROP TABLE agents")
+                self.conn.execute("ALTER TABLE agents_new RENAME TO agents")
+            self.conn.execute("COMMIT")
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
 
     @contextmanager
     def tx(self):
