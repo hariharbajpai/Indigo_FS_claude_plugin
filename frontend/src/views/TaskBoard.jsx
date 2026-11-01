@@ -3,7 +3,7 @@ import { useStore } from '../useLive.js'
 import TaskCard from '../components/TaskCard.jsx'
 
 const COLS = ['todo', 'in_progress', 'review', 'blocked', 'done']
-const NAME = { todo: 'To do', in_progress: 'In progress', review: 'Review', blocked: 'Blocked', done: 'Done' }
+export const NAME = { todo: 'To do', in_progress: 'In progress', review: 'Review', blocked: 'Blocked', done: 'Done' }
 
 export default function TaskBoard() {
   const { data } = useStore()

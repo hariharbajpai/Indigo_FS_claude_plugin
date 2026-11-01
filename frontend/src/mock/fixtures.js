@@ -10,7 +10,8 @@ export function makeState() {
   const meera = ag('ag-1', 'Meera Rao', 'Vertical Head', 'head', 'maintenance')
   const sam = ag('ag-2', 'Samir Khan', 'Vertical Head', 'head', 'flight-operations')
   const old = ag('ag-3', 'Old Head', 'Vertical Head', 'head', 'legacy-fuel', 'retired')
-  const hyd = ag('ag-4', 'Hydraulics Analyst', 'Hydraulics analyst', 'hired', 'maintenance')
+  const hyd = { ...ag('ag-4', 'Hydraulics Analyst', 'Hydraulics analyst', 'hired', 'maintenance'),
+    reason: 'TK-1 needs someone to read the hydraulic incident logs for Q3 against the Aircraft Maintenance Manual Rev 12 (chapter 29) and the Reliability Programme, and list every repeat defect with its tail number.' }
   const note = (id, task_id, author, status, text, m) => ({ id, task_id, author, status, note: text, ts: ago(m) })
   const task = (id, title, d, agent, status, notes) => ({
     id, title, description: title, acceptance: 'Delivered and reviewed', dept: d,

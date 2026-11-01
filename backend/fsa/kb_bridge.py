@@ -131,6 +131,22 @@ class KbBridge:
         return sorted(n for n in os.listdir(d) if not n.startswith(("_", "."))
                       and os.path.isfile(os.path.join(d, n, "_doc.md")))
 
+    def documents(self, dept):
+        """The department's current manuals for the dashboard: title, revision, effective date and pages
+        from each _doc.md front matter."""
+        base = os.path.join(self.root, self.kb_dept(dept))
+        out = []
+        for doc_id in self.list_docs(dept):
+            try:
+                with open(os.path.join(base, doc_id, "_doc.md"), encoding="utf-8") as f:
+                    meta, _ = _front_matter([next(f, "").rstrip("\n") for _ in range(40)])
+            except OSError:
+                meta = {}
+            out.append({"id": doc_id, "title": meta.get("doc") or doc_id, "revision": meta.get("revision") or None,
+                        "effective": meta.get("effective") or None, "pages": meta.get("total_pages") or None,
+                        "source_file": meta.get("source_file") or None})
+        return out
+
     def keywords(self, dept):
         """Planner scope hints: the department's document ids."""
         return " ".join(x.replace("-", " ") for x in self.list_docs(dept))

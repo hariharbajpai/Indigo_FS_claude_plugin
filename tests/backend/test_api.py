@@ -51,6 +51,19 @@ class DepartmentTests(ApiBase):
         self.assertEqual(org["departments"][0]["head"]["name"], "Asha Verma")
         self.assertEqual(len(self.c.get("/api/departments").json()), 1)
 
+    def test_department_documents(self):
+        self.add_dept("Engine Maintenance", "Asha Verma")
+        r = self.c.get("/api/departments/engine-maintenance/documents")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["department"], "engine-maintenance")
+        self.assertEqual([d["id"] for d in body["documents"]], ["manual"])
+        doc = body["documents"][0]
+        self.assertEqual(doc["source_file"], "manual.pdf")
+        self.assertTrue(doc["title"])
+        self.assertEqual(set(doc), {"id", "title", "revision", "effective", "pages", "source_file"})
+        self.assertEqual(self.c.get("/api/departments/nope/documents").status_code, 404)
+
     def test_upload_keeps_pdf_bytes_exact(self):
         self.add_dept("Engine Maintenance", "Asha")
         # same bytes again -> the KB sees an identical file (proves the multipart parser keeps bytes intact)

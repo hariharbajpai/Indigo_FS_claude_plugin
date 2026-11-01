@@ -141,6 +141,7 @@ class App:
             R("GET", "/api/messages", self.messages),
             R("GET", "/api/departments", lambda r: self.store.list_departments(r.flag("include_retired"))),
             R("POST", "/api/departments", self.add_department),
+            R("GET", "/api/departments/(?P<did>[^/]+)/documents", self.department_documents),
             R("POST", "/api/departments/(?P<did>[^/]+)/replace", self.replace_department),
             R("POST", "/api/departments/(?P<did>[^/]+)/retire",
               lambda r: retire_department(self.store, self.kb, r.params["did"])),
@@ -227,6 +228,10 @@ class App:
         fields, files = r.form()
         return add_department(self.store, self.kb, files, fields.get("name", ""), fields.get("head_name", ""),
                               fields.get("decision", ""), fields.get("target", ""))
+
+    def department_documents(self, r):
+        d = self.store.get_department(r.params["did"])  # unknown id -> 404
+        return {"department": d["id"], "documents": self.kb.documents(d["id"])}
 
     def replace_department(self, r):
         _, files = r.form()

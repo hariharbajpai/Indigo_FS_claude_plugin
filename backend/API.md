@@ -126,6 +126,13 @@ or, nothing is written and the Owner must decide:
 { "status": "needs_decision", "matches": [ { "file":"a.pdf","result":"duplicate|new_version|new","existing_dept":"engine-maintenance"|null,"detail":"..." } ] }
 ```
 (HTTP 409 for `needs_decision`.) To proceed, resend with `decision=replace&target=<dept id>` (updates the matching document via `kb.py ingest --replace`, old revision archived; keeps head) or `decision=new` (force create).
+### GET /api/departments/{id}/documents
+The department's current manuals in the knowledge base (superseded and withdrawn revisions are left out). Unknown department -> 404.
+```json
+{ "department": "engine-maintenance",
+  "documents": [ { "id":"engine-manual","title":"Engine Manual","revision":"Rev 5"|null,"effective":"2026-03-01"|null,
+                   "pages":42|null,"source_file":"engine-manual.pdf"|null } ] }
+```
 ### POST /api/departments/{id}/replace  (multipart: `files`) -> `{ "status":"replaced","department":Department }`
 ### POST /api/departments/{id}/retire  -> `{ "department": Department, "retired_agents": ["ag-2","ag-5"] }`. Retires head and hired agents. Open tasks of the dept become `blocked` with a note.
 Chief cannot be retired: `POST /api/agents/chief/retire` -> 409.

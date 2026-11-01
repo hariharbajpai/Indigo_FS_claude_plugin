@@ -143,6 +143,7 @@ export const api = {
       throw err
     }
   },
+  departmentDocuments: (id) => request(`/departments/${encodeURIComponent(id)}/documents`),
   replaceDepartment: (id, files) => {
     const fd = new FormData()
     for (const f of files) fd.append('files', f)

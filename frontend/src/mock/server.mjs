@@ -93,6 +93,11 @@ http.createServer(async (req, res) => {
     return send(res, 200, { chief: S.chief, checker: S.checker, departments: S.departments.filter((d) => all || d.status === 'active').map(orgRow) })
   }
   if (get && p === '/api/departments') return send(res, 200, S.departments.filter((d) => q.get('include_retired') === 'true' || d.status === 'active'))
+  let dm = /^\/api\/departments\/([^/]+)\/documents$/.exec(p)
+  if (get && dm) {
+    if (!S.departments.find((d) => d.id === dm[1])) return send(res, 404, { detail: 'Unknown department' })
+    return send(res, 200, { department: dm[1], documents: [{ id: 'manual', title: 'Department Manual', revision: 'Rev 3', effective: '2026-03-01', pages: 48, source_file: 'manual.pdf' }] })
+  }
   if (get && p === '/api/work-requests') return send(res, 200, S.work_requests.map(wrOut).reverse())
   let m = /^\/api\/work-requests\/([^/]+)$/.exec(p)
   if (get && m) {

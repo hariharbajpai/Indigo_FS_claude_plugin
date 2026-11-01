@@ -53,7 +53,7 @@ export function useLive(fetcher = api.getState) {
   return { data, error, mode, loading: data === null && !error, refresh }
 }
 
-const LiveContext = createContext(null)
+export const LiveContext = createContext(null) // exported for tests
 
 export function LiveProvider({ children }) {
   const live = useLive()
