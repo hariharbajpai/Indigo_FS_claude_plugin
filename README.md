@@ -191,15 +191,7 @@ Manuals, FDM data and reports are confidential. `.gitignore` excludes `safety-kb
 - **Scanned PDFs** have no text layer. The tool stops and asks you to OCR first (`ocrmypdf in.pdf out.pdf`).
 - **Page numbers** are PDF page indexes, which can differ from the printed page labels.
 - **Heading detection** for PDFs is heuristic (Chapter/Part/numbered headings). The ingest report shows how many headings were found; if few, check the chunk files or use `--layout`.
-- **Search is keyword-based** (BM25) by default. It works well on manuals because they use consistent terms; agents try several phrasings. For questions in different words (Hinglish, synonyms) you can switch on **meaning-based search**: point `kb.py` at an OpenAI-style embeddings endpoint, for example Ollama with a multilingual model:
-
-  ```bash
-  ollama pull bge-m3
-  export SAFETY_KB_EMBED_URL=http://localhost:11434/v1/embeddings SAFETY_KB_EMBED_MODEL=bge-m3
-  python3 skills/safety-kb/scripts/kb.py reindex     # embeds every section once; later ingests embed their own sections
-  ```
-
-  Start Claude Code from a shell with those two variables set. Search then merges keyword and meaning matches (reciprocal rank fusion). If the endpoint is down it silently falls back to keywords. A match found by meaning alone must reach cosine similarity 0.5 (`SAFETY_KB_EMBED_MIN` changes it). The vectors live in `_index/search.db` (a cache, like the rest of the index); the manual text is sent only to the endpoint you configured. Similarity is computed in plain Python, which is fine up to roughly 10,000 sections.
+- **Search is keyword-based** (BM25), not semantic. It works well on manuals because they use consistent terms; agents try several phrasings. For very large libraries, front it with a proper vector index or a document connector.
 - Legacy `.doc` is not read; save as `.docx`.
 - **Coordination is asynchronous.** A department sees another's answer in the next round, not mid-run. Claude Code's experimental agent-teams mode could allow live messaging; this plugin does not depend on it.
 - **Memory is only as good as what gets recorded.** Agents are told to record sparingly and with sources; review it now and then.
