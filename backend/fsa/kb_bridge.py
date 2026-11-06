@@ -23,7 +23,7 @@ from .store import Invalid
 DEFAULT_READ_CHARS = 16000   # a whole file read: a few thousand tokens at most
 DEFAULT_WINDOW_CHARS = 4000  # a read around a line from search_manuals: about a thousand tokens
 MAX_READ_CHARS = 40000
-PACK_CHARS = 2400            # what the File Checker stores per section of a source pack
+PACK_CHARS = 1600            # what the File Checker stores per section of a source pack
 CACHE_FILES = 64             # chunk files kept in memory, so a file is read from disk once while it is unchanged
 _PAGE_LINE = re.compile(r"^<!-- page (\d+) -->$")
 _HEAD_LINE = re.compile(r"^#{1,6}\s+(.+?)\s*$")

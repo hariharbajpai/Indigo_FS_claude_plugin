@@ -98,6 +98,24 @@ class WakeTests(Base):
         self.assertEqual(self.o.next_work()["ownerMessages"], [])  # each Owner message is reported once
         self.assertEqual(self.s.get_work_request("WR-1")["status"], "Done")
 
+    def test_small_request_answered_without_brief(self):
+        self.w.submit_work_request("Engine manual me borescope interval kya hai?")
+        [c] = self.run_one("chief")
+        self.assertIn("1a. Small", c["prompt"])
+        self.o.tool_report(c["activation_id"], "WR-1", "Every 500 hours (Engine Manual rev 3, §4.2, p.12).")
+        self.o.activation_done(c["activation_id"], "answered")
+        self.assertIsNone(self.s.get_brief("WR-1"))
+        self.assertEqual(self.s.get_work_request("WR-1")["status"], "Done")  # one Chief run, no checker or Heads
+        fin = self.o.next_work()
+        self.assertEqual(fin["status"], "finished")
+        self.assertEqual(fin["message"], "All work requests are done.")
+        # a big request: an early report does not close it, its tasks do
+        self.w.submit_work_request("Engine aur crew dono check karo")
+        [c] = self.run_one("chief")
+        self.brief(c["activation_id"], "WR-2")
+        self.o.tool_report(c["activation_id"], "WR-2", "Started.")
+        self.assertEqual(self.s.get_work_request("WR-2")["status"], "Briefed")
+
     def test_status_messages_do_not_wake_the_chief_but_blocked_does(self):
         self.w.submit_work_request("x")
         [c] = self.run_one("chief")

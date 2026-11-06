@@ -191,7 +191,15 @@ Manuals, FDM data and reports are confidential. `.gitignore` excludes `safety-kb
 - **Scanned PDFs** have no text layer. The tool stops and asks you to OCR first (`ocrmypdf in.pdf out.pdf`).
 - **Page numbers** are PDF page indexes, which can differ from the printed page labels.
 - **Heading detection** for PDFs is heuristic (Chapter/Part/numbered headings). The ingest report shows how many headings were found; if few, check the chunk files or use `--layout`.
-- **Search is keyword-based** (BM25), not semantic. It works well on manuals because they use consistent terms; agents try several phrasings. For very large libraries, front it with a proper vector index or a document connector.
+- **Search is keyword-based** (BM25) by default. It works well on manuals because they use consistent terms; agents try several phrasings. For questions in different words (Hinglish, synonyms) you can switch on **meaning-based search**: point `kb.py` at an OpenAI-style embeddings endpoint, for example Ollama with a multilingual model:
+
+  ```bash
+  ollama pull bge-m3
+  export SAFETY_KB_EMBED_URL=http://localhost:11434/v1/embeddings SAFETY_KB_EMBED_MODEL=bge-m3
+  python3 skills/safety-kb/scripts/kb.py reindex     # embeds every section once; later ingests embed their own sections
+  ```
+
+  Start Claude Code from a shell with those two variables set. Search then merges keyword and meaning matches (reciprocal rank fusion). If the endpoint is down it silently falls back to keywords. A match found by meaning alone must reach cosine similarity 0.5 (`SAFETY_KB_EMBED_MIN` changes it). The vectors live in `_index/search.db` (a cache, like the rest of the index); the manual text is sent only to the endpoint you configured. Similarity is computed in plain Python, which is fine up to roughly 10,000 sections.
 - Legacy `.doc` is not read; save as `.docx`.
 - **Coordination is asynchronous.** A department sees another's answer in the next round, not mid-run. Claude Code's experimental agent-teams mode could allow live messaging; this plugin does not depend on it.
 - **Memory is only as good as what gets recorded.** Agents are told to record sparingly and with sources; review it now and then.
@@ -228,8 +236,8 @@ Owner (you) ──work / instructions──▶ Dhruv Rebbapragada, Chief of Flig
 | `/flight-safety-agents:update` | Updates the plugin to the latest version from GitHub. Run `/reload-plugins` or start a new session afterwards. |
 
 ### How a request flows
-1. You send work. The **Chief** (`agents/chief-of-flight-safety.md`) searches what each department's manuals cover and writes the **brief**: summary, goals and tasks, each owned by one department. If no department fits, he asks which one to add and creates no tasks.
-2. The **File Checker** (`agents/file-checker.md`) takes every new task **before its department starts**. It searches the manuals (the task's department, `shared`, and any other department the task's words point at), picks the 3 to 6 sections that answer the task and checks them: current revision, sections that disagree, parts the manuals do not cover. The system itself reads each section **once** and stores it in the task's **source pack** with its exact document, revision, section and page (a copy is saved under `_outputs/<WR>/<task>-source-pack.md`). Only then does the department start. If the File Checker delivers nothing it is asked again, and after two tries the departments start without a pack (flagged), so work never stalls.
+1. You send work. The **Chief** (`agents/chief-of-flight-safety.md`) first decides if it is small or big. A **small** request (a question or lookup one department's manuals answer, no file, no assessment) he answers himself from the manuals, with sources, in one agent run: no brief, no File Checker, no department run. A **big** request gets a **brief**: he searches what each department's manuals cover and writes summary, goals and tasks, each owned by one department. If no department fits, he asks which one to add and creates no tasks.
+2. The **File Checker** (`agents/file-checker.md`) takes every new task **before its department starts**. It searches the manuals (the task's department, `shared`, and any other department the task's words point at), picks the 3 to 5 sections that answer the task (at most 6) and checks them: current revision, sections that disagree, parts the manuals do not cover. The system itself reads each section **once** and stores it in the task's **source pack** with its exact document, revision, section and page (a copy is saved under `_outputs/<WR>/<task>-source-pack.md`). Only then does the department start. If the File Checker delivers nothing it is asked again, and after two tries the departments start without a pack (flagged), so work never stalls.
 3. Each **Vertical Head** (`agents/vertical-head.md`) gets its tasks together with the source pack in its prompt. It starts from the pack, searches only for what the pack lacks, or **hires** a specialist (`agents/dept-specialist.md`) for a task. Every hire, and every refusal at the cap, is logged.
 4. Agents work only from the uploaded manuals, cite document, section and page, save results with `save_output` (`safety-kb/_outputs/<WR>/<task>.md`) and move tasks through `todo → in_progress → done` (or `blocked`), always with a note.
 5. When the last task is done the Chief reads the notes and outputs (the File Checker's documentation issues are in his review message), builds any file you asked for, and sends you a **completion report** that lists every file with its full path.

@@ -1,11 +1,15 @@
 """End-to-end tests for kb.py. Run:  python3 -m unittest discover -s tests -v"""
 import json
 import os
+import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -384,6 +388,90 @@ class IndexTests(unittest.TestCase):
     def test_a_broken_index_never_breaks_search(self):
         (self.root / "_index" / "search.db").write_bytes(b"this is not a database")
         self.assertTrue(self.search("risk matrix"))
+
+
+CONCEPTS = [{"report", "reports", "submit", "tell", "notify", "inform", "occurrence", "event"},
+            {"risk", "hazard", "intolerable", "danger"}, {"approach", "unstable", "landing"}, {"change", "modification"}]
+
+
+class FakeEmbeddings(BaseHTTPRequestHandler):
+    """A tiny OpenAI-style /embeddings endpoint: words of one concept share a dimension, so 'tell' is close to 'report'."""
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        data = [{"index": i, "embedding": [float(sum(w in c for w in re.findall(r"[a-z]+", t.lower()))) for c in CONCEPTS]}
+                for i, t in enumerate(body["input"])]
+        out = json.dumps({"data": data}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *args):
+        pass
+
+
+class VectorSearchTests(unittest.TestCase):
+    """Optional meaning-based search: keywords + a fake embeddings endpoint, fused. Off unless the env vars are set."""
+    ASK = "tell someone about an occurrence"  # shares no word with the manual, only a meaning
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), FakeEmbeddings)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.on = {"SAFETY_KB_EMBED_URL": f"http://127.0.0.1:{self.server.server_port}/v1/embeddings",
+                   "SAFETY_KB_EMBED_MODEL": "fake"}
+        self.f = fixtures.make_md(self.tmp / "sms.md")
+        kb(self.tmp, "ingest", str(self.f), "--dept", "sms", "--title", "SMS Manual", "--rev", "Rev 1")  # no endpoint yet
+        self.db = self.tmp / "safety-kb" / "_index" / "search.db"
+
+    def search(self, query, env=None):
+        return json.loads(kb(self.tmp, "search", query, "--json", env=env).stdout)
+
+    def counts(self):
+        con = sqlite3.connect(self.db)
+        try:
+            return con.execute("SELECT (SELECT COUNT(*) FROM vecs), (SELECT COUNT(*) FROM blocks b JOIN files f ON f.id = b.file_id "
+                               "WHERE f.sup = 0), (SELECT COUNT(*) FROM vecs WHERE block_id NOT IN (SELECT id FROM blocks))").fetchone()
+        finally:
+            con.close()
+
+    def test_off_by_default_and_a_meaning_only_question_finds_nothing(self):
+        self.assertEqual(self.search(self.ASK), [])
+        self.assertEqual(self.counts()[0], 0)
+
+    def test_reindex_embeds_and_search_finds_by_meaning(self):
+        self.assertIn("embedded", kb(self.tmp, "reindex", env=self.on).stdout)
+        vecs, blocks, orphans = self.counts()
+        self.assertEqual((vecs, orphans), (blocks, 0))
+        top = self.search(self.ASK, env=self.on)[0]
+        self.assertIn("safety report", top["snippet"])
+
+    def test_keyword_answers_stay_first_when_vectors_are_on(self):
+        kb(self.tmp, "reindex", env=self.on)
+        for q in ("risk index intolerable Accountable Manager", "unstable approach rate per 1000 flights"):
+            self.assertEqual(self.search(q, env=self.on)[0]["line"], self.search(q)[0]["line"], q)
+
+    def test_a_dead_endpoint_means_keywords_only_not_an_error(self):
+        dead = {**self.on, "SAFETY_KB_EMBED_URL": "http://127.0.0.1:9/v1/embeddings"}
+        self.assertTrue(self.search("risk matrix", env=dead))
+        self.assertEqual(self.search(self.ASK, env=dead), [])
+
+    def test_unrelated_questions_do_not_match_by_meaning(self):
+        kb(self.tmp, "reindex", env=self.on)
+        self.assertEqual(self.search("zebra", env=self.on), [])  # no concept shared: cosine is below the floor
+
+    def test_new_and_replaced_documents_keep_vectors_in_step(self):
+        kb(self.tmp, "reindex", env=self.on)
+        new = self.tmp / "sms6.md"
+        new.write_text(self.f.read_text().replace("within 24 hours", "within 6 hours"))
+        kb(self.tmp, "ingest", str(new), "--replace", "sms-manual", "--rev", "Rev 2", env=self.on)
+        vecs, blocks, orphans = self.counts()
+        self.assertEqual((vecs, orphans), (blocks, 0))  # the old revision's vectors are gone
+        self.assertIn("6 hours", self.search(self.ASK, env=self.on)[0]["snippet"])
 
 
 class LinksTests(unittest.TestCase):

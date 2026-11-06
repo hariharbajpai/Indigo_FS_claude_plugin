@@ -23,8 +23,8 @@ AGENT_TYPES = {"chief": f"{PLUGIN}:chief-of-flight-safety", "checker": f"{PLUGIN
                "head": f"{PLUGIN}:vertical-head", "hired": f"{PLUGIN}:dept-specialist"}
 
 MAX_CHECK_TRIES = 2         # times the File Checker is asked again before the departments start without its pack
-MAX_PACK_SOURCES = 8        # sections per task in a source pack
-PACK_PROMPT_CHARS = 12000   # how much of a task's pack goes into the Head's prompt (the rest is a pointer)
+MAX_PACK_SOURCES = 6        # sections per task in a source pack
+PACK_PROMPT_CHARS = 6400    # how much of a task's pack goes into the Head's prompt (the rest is a pointer)
 LINK_TEXT_CHARS = 1500
 
 MODEL_INFO = {
@@ -770,21 +770,28 @@ class Office:
 
 ROLE_GUIDE = {
     "chief": [
-        "You lead. You plan and coordinate; the departments do the work.",
+        "You lead. You plan and coordinate; the departments do the work (small lookups you answer yourself, 1a).",
         "0. Files: when the Owner asks for a presentation/PPT, a Word document or an Excel sheet, put it in the "
         "brief's deliverables (format pptx, docx or xlsx, and a title) and ask the departments for the content "
         "(slide points, sections or table rows, with sources) in their tasks.",
-        "1. A work request with no brief: check what each department's manuals cover (search_manuals), then call "
-        "submit_brief with a "
+        "1. A work request with no brief: first decide if it is small or big.",
+        "1a. Small = a question or lookup that one department's manuals answer (what does X say, which limit, "
+        "timeline or definition, where is Y), with no PPT, Word or Excel file and no assessment, finding, CAP or "
+        "data to analyse. Answer it yourself, without a brief: search_manuals, read_section only the lines you need, "
+        "then report_to_owner with the answer and its sources (document, revision, section, page). The report "
+        "closes the request. If the manuals do not cover it, say so plainly in the report.",
+        "1b. Big = anything else (two or more departments, a file, an assessment, a finding or CAP, data). Check "
+        "what each department's manuals cover (search_manuals), then call submit_brief with a "
         "short summary, goals and tasks. Each task has exactly one department (dept = department id), a clear title, "
         "details and acceptance criteria. Split work that needs two departments into two tasks.",
-        "1b. After your brief the File Checker reads the manuals once for each task and hands the department a source "
+        "1c. After your brief the File Checker reads the manuals once for each task and hands the department a source "
         "pack; the Vertical Heads start when it is ready, so you do not need to read the manuals for them. When a "
         "task spans two departments' words, related_departments shows which department owns a term.",
         "2. No department fits: call submit_brief with no tasks and a question asking the Owner which department to "
         "add (its PDFs and Vertical Head name). Never guess.",
         "3. An Owner instruction: re-plan with submit_brief: a change_note, block_task_ids for tasks that conflict "
-        "with it, and any new tasks. If it changes nothing, say so with send_message to the Owner.",
+        "with it, and any new tasks. If it changes nothing, say so with send_message to the Owner. A small "
+        "follow-up to a quick answer: answer it the same way (1a).",
         "4. A blocked task or a question from a Head: answer with send_message, or re-plan.",
         "5. A review message (all tasks done): read the task notes and their output files (read_section). If the "
         "brief has deliverables, build each one with build_file (task_id = the work request id) from the team's "
@@ -817,7 +824,7 @@ ROLE_GUIDE = {
         "1. For each task under Work: search_manuals in the task's department (and `shared`), and in any other "
         "department its words point at (see 'Linked by keywords' or call related_departments). Two or three "
         "phrasings are enough.",
-        "2. Pick the sections that answer the task, usually 3 to 6, at most 8: pass each one's `file` and `line` from "
+        "2. Pick the sections that answer the task, usually 3 to 5, at most 6: pass each one's `file` and `line` from "
         "the search result, with a short `why`. You rarely need read_section; use it only when a snippet cannot say "
         "whether a section is relevant. The system reads each section once and records the exact document, revision, "
         "section and page.",

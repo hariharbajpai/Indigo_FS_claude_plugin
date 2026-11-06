@@ -21,7 +21,7 @@ export default function WorkRequestCard({ wr, briefs, tasks, files = [] }) {
           <div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${pct}%` }} /></div>
           <span className="small muted">{own.filter((t) => t.status === 'done').length}/{own.length} tasks · {pct}%</span>
         </div>
-        <BriefPanel brief={latest} />
+        <BriefPanel brief={latest} done={wr.status === 'Done'} />
         <FileList files={files.filter((f) => f.work_request_id === wr.id)} />
         {wr.report && <div className="banner ok report"><strong>Completion report</strong>{'\n'}{wr.report}</div>}
       </div>

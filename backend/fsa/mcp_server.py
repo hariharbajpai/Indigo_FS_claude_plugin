@@ -119,8 +119,9 @@ TOOLS = [
                            "description": "Files the Owner asked for (PPT, Word, Excel); kept from the last brief "
                                           "if omitted"}},
          ["activation", "work_request_id", "summary"])),
-    ("report_to_owner", "Chief only: send the Owner the completion report for a work request. Paths of the files "
-                        "built are added for you. Refused while a requested deliverable is missing, unless "
+    ("report_to_owner", "Chief only: send the Owner the completion report for a work request, or the answer to a "
+                        "small request you answered yourself without a brief (that closes the request). Paths of "
+                        "the files built are added for you. Refused while a requested deliverable is missing, unless "
                         "missing_reason says why it cannot be made.",
      obj({"activation": ACT, "work_request_id": S, "text": S, "missing_reason": S},
          ["activation", "work_request_id", "text"])),

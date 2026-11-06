@@ -214,6 +214,8 @@ class Workflow:
             body += f"\n\nNot delivered: {missing_reason.strip()}"
         m = self.store.add_message(author, "owner", body, kind="report", work_request_id=wid)
         self.store.add_event("report.posted", {"work_request_id": wid})
+        if not self.store.get_brief(wid):  # a quick answer has no brief and no tasks: the report closes it
+            self.store.set_wr_status(wid, "Done")
         return m
 
     def request_detail(self, wid):

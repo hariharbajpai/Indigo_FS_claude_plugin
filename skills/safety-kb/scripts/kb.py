@@ -20,6 +20,11 @@
 KB location: --kb, else $SAFETY_KB_DIR, else ./safety-kb
 Layout:      <kb>/<dept>/<doc-id>/{_doc.md, NN-section.md}   (older revisions: <kb>/<dept>/_superseded/)
 
+Optional meaning-based search: set SAFETY_KB_EMBED_URL and SAFETY_KB_EMBED_MODEL (an OpenAI-style /embeddings
+endpoint, e.g. Ollama http://localhost:11434/v1/embeddings with bge-m3; SAFETY_KB_EMBED_KEY if it needs one), then run
+`kb.py reindex` once. Search then fuses keyword (BM25) and vector results; if the endpoint is down it is keywords only.
+SAFETY_KB_EMBED_MIN (default 0.5) is the lowest cosine similarity a vector-only match may have.
+
 Stdlib only. PDF text comes from pypdf, PyMuPDF or the pdftotext CLI (first one found).
 DOCX is read directly from its XML. Markdown and plain text are accepted as they are.
 """
@@ -40,7 +45,9 @@ import sys
 import time
 import zipfile
 import xml.etree.ElementTree as ET
+from array import array
 from collections import Counter
+from operator import mul
 from pathlib import Path
 
 try:
@@ -607,8 +614,11 @@ def iter_blocks(kb: Path, depts: list[str] | None, doc: str | None, include_sup:
 # where each block sits, never the text itself. Files are re-indexed when their size or time changes, so ingest,
 # retire and hand edits are all picked up. Safe to delete at any time; without SQLite/FTS5 search scans the files.
 
-INDEX_SCHEMA = 1
+INDEX_SCHEMA = 2
 POOL_PER_RESULT = 8  # the index returns this many candidates per wanted result; they are re-ranked below
+EMBED_BATCH = 32     # blocks per embeddings request
+RRF_K = 60           # reciprocal rank fusion constant (the usual value)
+VEC_POOL = 30        # vector matches that go into the fusion
 
 
 def open_index(kb: Path):
@@ -624,8 +634,9 @@ def open_index(kb: Path):
             conn.execute("BEGIN IMMEDIATE")
             try:
                 if conn.execute("PRAGMA user_version").fetchone()[0] != INDEX_SCHEMA:
-                    for t in ("fts", "blocks", "files"):
+                    for t in ("fts", "blocks", "files", "vecs"):
                         conn.execute(f"DROP TABLE IF EXISTS {t}")
+                    conn.execute("CREATE TABLE vecs(block_id INTEGER PRIMARY KEY, model TEXT, v BLOB)")
                     conn.execute("CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT UNIQUE, mtime_ns INTEGER, size INTEGER, "
                                  "dept TEXT, mdept TEXT, doc_id TEXT, doc TEXT, revision TEXT, effective TEXT, sup INTEGER)")
                     conn.execute("CREATE TABLE blocks(id INTEGER PRIMARY KEY, file_id INTEGER, line_start INTEGER, "
@@ -663,6 +674,7 @@ def refresh_index(kb: Path, conn) -> tuple[int, int]:
         drop, todo = diff()  # another process may have done this while we waited for the lock
         for fid in drop:
             conn.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM blocks WHERE file_id = ?)", (fid,))
+            conn.execute("DELETE FROM vecs WHERE block_id IN (SELECT id FROM blocks WHERE file_id = ?)", (fid,))
             conn.execute("DELETE FROM blocks WHERE file_id = ?", (fid,))
             conn.execute("DELETE FROM files WHERE id = ?", (fid,))
         next_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM blocks").fetchone()[0] + 1
@@ -685,11 +697,72 @@ def refresh_index(kb: Path, conn) -> tuple[int, int]:
                              [(i, " ".join(tokens(b["text"])), " ".join(tokens(b["section"]))) for i, b in zip(ids, blocks)])
             next_id += len(blocks)
             n_files, n_blocks = n_files + 1, n_blocks + len(blocks)
+        conn.execute("DELETE FROM vecs WHERE block_id NOT IN (SELECT id FROM blocks)")  # a late embed of a dropped block
         conn.execute("COMMIT")
         return n_files, n_blocks
     except BaseException:
         conn.execute("ROLLBACK")
         raise
+
+
+def embed_config():
+    """(url, model, key) when an embeddings endpoint is configured, else None (then search is keywords only)."""
+    url, model = os.environ.get("SAFETY_KB_EMBED_URL", ""), os.environ.get("SAFETY_KB_EMBED_MODEL", "")
+    if url.startswith(("http://", "https://")) and model:
+        return url, model, os.environ.get("SAFETY_KB_EMBED_KEY", "")
+    return None
+
+
+def embed(texts: list[str], timeout: float):
+    """Unit-length vectors for `texts` from an OpenAI-style /embeddings endpoint, or None on any problem."""
+    cfg = embed_config()
+    if not cfg:
+        return None
+    import urllib.request
+    url, model, key = cfg
+    headers = {"Content-Type": "application/json", **({"Authorization": f"Bearer {key}"} if key else {})}
+    try:
+        req = urllib.request.Request(url, json.dumps({"model": model, "input": [t[:2000] for t in texts]}).encode(), headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = sorted(json.load(r)["data"], key=lambda d: d.get("index", 0))
+        out = []
+        for d in data:
+            norm = math.sqrt(sum(x * x for x in d["embedding"])) or 1.0
+            out.append(array("f", (x / norm for x in d["embedding"])))
+        return out if len(out) == len(texts) else None
+    except Exception:  # endpoint down, slow or odd: the caller carries on with keywords only
+        return None
+
+
+def embed_missing(kb: Path, conn, timeout: float, limit: int = -1) -> int:
+    """Give every searchable block that has no vector for the configured model one. Returns how many it embedded."""
+    cfg = embed_config()
+    if not cfg:
+        return 0
+    rows = conn.execute(
+        "SELECT b.id, f.path, b.line_start, b.line_end, b.section FROM blocks b JOIN files f ON f.id = b.file_id "
+        "LEFT JOIN vecs v ON v.block_id = b.id AND v.model = ? WHERE f.sup = 0 AND v.block_id IS NULL "
+        "ORDER BY f.path, b.id LIMIT ?", (cfg[1], limit)).fetchall()
+    done, files = 0, {}
+    for i in range(0, len(rows), EMBED_BATCH):
+        batch, texts = rows[i:i + EMBED_BATCH], []
+        for _, path, l0, l1, section in batch:
+            if path not in files:
+                files.clear()  # rows are ordered by file, so one file is held at a time
+                try:
+                    files[path] = (kb / path).read_text(encoding="utf-8").splitlines()
+                except (OSError, UnicodeDecodeError):
+                    files[path] = []
+            texts.append(f"{section}\n{block_text(files[path], l0, l1)}")
+        vecs = embed(texts, timeout)
+        if vecs is None:
+            break
+        conn.execute("BEGIN IMMEDIATE")
+        conn.executemany("INSERT OR REPLACE INTO vecs(block_id, model, v) SELECT id, ?, ? FROM blocks WHERE id = ?",
+                         [(cfg[1], v.tobytes(), r[0]) for r, v in zip(batch, vecs)])
+        conn.execute("COMMIT")
+        done += len(batch)
+    return done
 
 
 def update_index(kb: Path) -> None:
@@ -699,6 +772,7 @@ def update_index(kb: Path) -> None:
         return
     try:
         refresh_index(kb, conn)
+        embed_missing(kb, conn, timeout=60)
     except Exception:
         pass
     finally:
@@ -725,29 +799,70 @@ def search_index(conn, kb: Path, q: list[str], a: argparse.Namespace):
         "SELECT b.line_start, b.line_end, b.page, b.section, f.path, f.mdept, f.doc_id, f.doc, f.revision, f.effective, f.sup, "
         "bm25(fts, 1.0, 2.0) AS s FROM fts JOIN blocks b ON b.id = fts.rowid JOIN files f ON f.id = b.file_id "
         f"WHERE fts MATCH ?{filt} ORDER BY s LIMIT ?", [match, *args, max(a.top * POOL_PER_RESULT, 60)]).fetchall()
-    if not rows:
+    vec_rows = vector_rows(conn, a.query, filt, args)
+    if not rows and not vec_rows:
         any_block = conn.execute(f"SELECT 1 FROM blocks b JOIN files f ON f.id = b.file_id WHERE 1=1{filt} LIMIT 1", args).fetchone()
         return [], any_block is not None
     qset, phrase = set(q), a.query.lower().strip()
     files: dict[str, list[str]] = {}
-    scored = []
-    for l0, l1, page, section, path, mdept, doc_id, doc, rev, eff, sup, bm in rows:
+
+    def candidate(l0, l1, page, section, path, mdept, doc_id, doc, rev, eff, sup):
         try:
             if path not in files:
                 files[path] = (kb / path).read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError):
+            return None
+        return {"path": kb / path, "line": l0, "page": page, "section": section, "text": block_text(files[path], l0, l1),
+                "superseded": bool(sup), "meta": {"dept": mdept, "doc": doc, "doc_id": doc_id, "revision": rev, "effective": eff}}
+
+    scored = []
+    for *blk, bm in rows:
+        c = candidate(*blk)
+        if c is None:
             continue
-        text = block_text(files[path], l0, l1)
-        hit = qset & (set(tokens(text)) | set(tokens(section)))
+        hit = qset & (set(tokens(c["text"])) | set(tokens(c["section"])))
         if not hit:
             continue
         s = -bm * (0.5 + 0.5 * len(hit) / len(qset))
-        if len(q) > 1 and phrase in text.lower():
+        if len(q) > 1 and phrase in c["text"].lower():
             s *= 1.5
-        scored.append((s, {"path": kb / path, "line": l0, "page": page, "section": section, "text": text, "superseded": bool(sup),
-                           "meta": {"dept": mdept, "doc": doc, "doc_id": doc_id, "revision": rev, "effective": eff}}))
+        scored.append((s, c))
     scored.sort(key=lambda x: -x[0])
-    return scored, True
+    if not vec_rows:
+        return scored, True
+    # Reciprocal rank fusion: a block ranked high by keywords, by meaning, or by both comes first.
+    by_key, fused = {}, {}
+    by_meaning = [(0, c) for c in (candidate(*r) for r in vec_rows) if c]
+    for ranked in (scored, by_meaning):
+        for rank, (_, c) in enumerate(ranked):
+            key = (c["path"], c["line"])
+            by_key[key] = c
+            fused[key] = fused.get(key, 0) + 100 / (RRF_K + rank + 1)
+    return sorted(((s, by_key[k]) for k, s in fused.items()), key=lambda x: -x[0]), True
+
+
+def vector_rows(conn, query: str, filt: str, args: list):
+    """The blocks closest in meaning to the query (cosine similarity at least SAFETY_KB_EMBED_MIN), best first.
+    [] when no embeddings are set up or the endpoint does not answer.
+    shortcut: cosine in pure Python, fine up to roughly 10,000 blocks; beyond that use numpy or sqlite-vec."""
+    cfg = embed_config()
+    qv = embed([query], timeout=5) if cfg else None
+    if not qv:
+        return []
+    floor = float(os.environ.get("SAFETY_KB_EMBED_MIN") or 0.5)
+    best = []
+    for *blk, raw in conn.execute(
+            "SELECT b.line_start, b.line_end, b.page, b.section, f.path, f.mdept, f.doc_id, f.doc, f.revision, f.effective, f.sup, v.v "
+            f"FROM vecs v JOIN blocks b ON b.id = v.block_id JOIN files f ON f.id = b.file_id WHERE v.model = ?{filt}",
+            [cfg[1], *args]):
+        v = array("f")
+        v.frombytes(raw)
+        if len(v) == len(qv[0]):
+            sim = sum(map(mul, v, qv[0]))
+            if sim >= floor:
+                best.append((sim, blk))
+    best.sort(key=lambda x: -x[0])
+    return [blk for _, blk in best[:VEC_POOL]]
 
 
 def search_scan(kb: Path, q: list[str], a: argparse.Namespace):
@@ -794,6 +909,7 @@ def search(a: argparse.Namespace) -> None:
     if conn is not None:
         try:
             refresh_index(kb, conn)
+            embed_missing(kb, conn, timeout=10, limit=2 * EMBED_BATCH)  # stragglers only; `reindex` does a first full pass
             found = search_index(conn, kb, q, a)
         except Exception:  # an index problem must never cost the user a search
             found = None
@@ -841,9 +957,14 @@ def reindex_cmd(a: argparse.Namespace) -> None:
     try:
         t0 = time.time()
         files, blocks = refresh_index(kb, conn)
+        vecs = embed_missing(kb, conn, timeout=60)
+        todo = conn.execute("SELECT COUNT(*) FROM blocks b JOIN files f ON f.id = b.file_id WHERE f.sup = 0").fetchone()[0] - vecs
     finally:
         conn.close()
-    print(f"indexed {files} file(s), {blocks} block(s) in {time.time() - t0:.1f}s → {kb / '_index' / 'search.db'}")
+    extra = ""
+    if embed_config():
+        extra = f", {vecs} embedded" + (f" ({todo} left: is the embeddings endpoint up?)" if todo > 0 else "")
+    print(f"indexed {files} file(s), {blocks} block(s){extra} in {time.time() - t0:.1f}s → {kb / '_index' / 'search.db'}")
 
 
 # --------------------------------------------------------------------------- matching, replacing, retiring

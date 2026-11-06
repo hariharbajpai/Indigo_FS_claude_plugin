@@ -1,7 +1,7 @@
 const FMT = { pptx: 'PPT', docx: 'Word', xlsx: 'Excel' }
 
-export default function BriefPanel({ brief }) {
-  if (!brief) return <p className="muted small">No brief yet: the Chief has not planned this request.</p>
+export default function BriefPanel({ brief, done }) {
+  if (!brief) return <p className="muted small">{done ? 'Quick answer: the Chief answered from the manuals, no brief needed.' : 'No brief yet: the Chief has not planned this request.'}</p>
   return (
     <div className="brief">
       <div className="small"><strong>Brief v{brief.version}</strong>{brief.change_note && <span className="muted"> · {brief.change_note}</span>}</div>
