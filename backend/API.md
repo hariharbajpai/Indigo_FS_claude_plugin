@@ -111,7 +111,7 @@ Body `{ "agent_id": "ag-5" }` -> `Task`. Agent must be active and belong to the 
 Body `{ "name":"Ravi", "role":"Hydraulics analyst", "reason":"Task TK-1 needs...", "task_id":"TK-1" /* optional: also assigns */ }` -> 201 `Agent`. At 5 active agents (head + hired) in the department -> 409 and a `refusal` message + `agent.hire_refused` event are logged.
 
 ### GET /api/messages?dept=&agent=&task=&work_request_id=&since_id=&limit=
-Oldest first, default limit 500. `dept` matches messages tied to the department or sent/received by its agents; `agent` matches sender or recipient; `task` matches task id. -> `[Message]`.
+Oldest first, default limit 500. Without `since_id` you get the newest `limit` messages; with `since_id`, the next `limit` after it. `dept` matches messages tied to the department or sent/received by its agents; `agent` matches sender or recipient; `task` matches task id. -> `[Message]`.
 
 ### GET /api/departments?include_retired=  ->  `[Department]`
 ### POST /api/departments   (multipart/form-data)

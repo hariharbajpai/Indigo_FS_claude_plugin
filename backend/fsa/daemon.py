@@ -119,7 +119,8 @@ def stop(root=None):
     root = os.path.abspath(root or paths.kb_root())
     st = _read(root)
     stopped = False
-    if st and _alive(st.get("pid")):
+    # After a crash or reboot the saved pid may belong to another program: only stop it if our dashboard answers.
+    if st and _alive(st.get("pid")) and _health(st.get("port"), 3):
         try:
             os.kill(int(st["pid"]), signal.SIGTERM)
             for _ in range(40):

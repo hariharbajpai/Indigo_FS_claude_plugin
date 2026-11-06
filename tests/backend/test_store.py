@@ -28,6 +28,35 @@ class StoreTests(unittest.TestCase):
             self.s.retire_agent("chief")
         self.assertEqual(self.s.org_chart()["chief"]["id"], "chief")
 
+    def test_messages_without_a_cursor_are_the_newest_window_oldest_first(self):
+        ids = [self.s.add_message("owner", "chief", f"m{i}")["id"] for i in range(1, 601)]
+        rows = self.s.list_messages()  # what the dashboard asks for
+        self.assertEqual([m["body"] for m in rows][:1] + [m["body"] for m in rows][-1:], ["m101", "m600"])
+        self.assertEqual(len(rows), 500)
+        self.assertEqual([m["id"] for m in rows], sorted(m["id"] for m in rows))
+        after = self.s.list_messages(since_id=ids[549])  # a cursor: what is new since m550
+        self.assertEqual([m["body"] for m in after][:1] + [m["body"] for m in after][-1:], ["m551", "m600"])
+        first = self.s.list_messages(since_id=ids[0], limit=3)  # with a cursor the next ones come, not the newest
+        self.assertEqual([m["body"] for m in first], ["m2", "m3", "m4"])
+
+    def test_department_ids_double_as_knowledge_base_folders(self):
+        north, south = "Flight Operations Safety Reporting North", "Flight Operations Safety Reporting South"
+        d1, _ = self.s.create_department(north, "A")
+        d2, _ = self.s.create_department(south, "B")
+        self.assertNotEqual(d1["id"], d2["id"])
+        self.assertTrue(len(d1["id"]) <= 30 and len(d2["id"]) <= 30)  # kb.py folders are cut at 30
+        with self.assertRaises(S.Conflict):  # the same long name again is still a duplicate
+            self.s.create_department(north, "C")
+        self.s.retire_department(d1["id"])
+        d3, _ = self.s.create_department(north, "D")  # a retired name gets a suffix that still fits
+        self.assertTrue(len(d3["id"]) <= 30 and d3["id"] not in (d1["id"], d2["id"]))
+        legacy = "flight-operations-safety-reporting-east"  # made by an older version: longer than 30
+        with self.s.db.tx() as c:
+            c.execute("INSERT INTO departments(id,name,head_id,source,status,created_at) VALUES(?,?,?,?,?,?)",
+                      (legacy, "Flight Operations Safety Reporting East", "ag-x", None, "active", "2026-01-01T00:00:00Z"))
+        new = self.s.next_dept_id("Flight Operations Safety Reporting West")
+        self.assertTrue(len(new) <= 30 and not legacy.startswith(new))  # does not land in the legacy folder
+
     def test_department_needs_head_and_name(self):
         with self.assertRaises(S.Invalid):
             self.s.create_department("Eng", " ")

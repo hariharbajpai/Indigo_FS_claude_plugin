@@ -116,9 +116,11 @@ class Store:
         if kind:
             sql += " AND kind=?"
             args.append(kind)
-        sql += " ORDER BY id LIMIT ?"
+        newest = not since_id  # no cursor: the newest `limit` messages; with a cursor: the next `limit` after it
+        sql += " ORDER BY id DESC LIMIT ?" if newest else " ORDER BY id LIMIT ?"
         args.append(limit)
-        return [self._msg(r) for r in self.db.q(sql, args)]
+        rows = self.db.q(sql, args)
+        return [self._msg(r) for r in (reversed(rows) if newest else rows)]  # always oldest first
 
     def count_task_messages(self, task_id):
         return self.db.one("SELECT COUNT(*) n FROM messages WHERE task_id=?", (task_id,))["n"]
@@ -246,16 +248,25 @@ class Store:
         return [self.get_department(r["id"]) for r in self.db.q(sql + " ORDER BY rowid")]
 
     def next_dept_id(self, name):
-        """Id the next department called `name` will get; Conflict if an active one has that name."""
-        did = slug((name or "").strip())
-        ex = self.db.one("SELECT status FROM departments WHERE id=?", (did,))
-        if ex and ex["status"] == "active":
+        """Id the next department called `name` will get; Conflict if an active one has that name.
+        An id is at most 30 characters, so it is also the department's knowledge-base folder (kb.py cuts folder
+        names at 30). Older ids may be longer: they are compared by their first 30 characters."""
+        name = (name or "").strip()
+        full = slug(name)
+        did = full[:30].strip("-") or "dept"
+
+        def used(i):
+            return self.db.q("SELECT status FROM departments WHERE rtrim(substr(id,1,30),'-')=?", (i,))
+
+        if any(r["status"] == "active" for r in used(did)) and (
+                len(full) <= 30 or self.db.one("SELECT 1 FROM departments WHERE status='active' AND lower(name)=lower(?)",
+                                               (name,))):
             raise Conflict(f"Department '{name}' already exists")
-        if ex:
-            n = 2
-            while self.db.one("SELECT 1 FROM departments WHERE id=?", (f"{did}-{n}",)):
-                n += 1
-            did = f"{did}-{n}"
+        base, n = did, 2
+        while used(did):  # a retired department, or a different name with the same first 30 characters
+            sfx = f"-{n}"
+            did = base[:30 - len(sfx)].rstrip("-") + sfx
+            n += 1
         return did
 
     def create_department(self, name, head_name, source=None, head_role="Vertical Head"):

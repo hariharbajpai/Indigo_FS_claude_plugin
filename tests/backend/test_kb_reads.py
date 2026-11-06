@@ -8,7 +8,7 @@ from helpers import REPO  # noqa: F401  (puts the repo on sys.path)
 
 from backend.fsa import mcp_server
 from backend.fsa.kb_bridge import KbBridge, MAX_READ_CHARS
-from backend.fsa.store import Invalid
+from backend.fsa.store import Invalid, Store
 
 
 def manual_text():
@@ -31,6 +31,17 @@ class ReadTests(unittest.TestCase):
         self.kb = KbBridge(os.path.join(self.tmp.name, "kb"))
         self.kb.ingest("sms", [("Ops_Manual.md", manual_text().encode())])
         [self.hit] = self.kb.search("zebrafish protocol", ["sms"], 1)
+
+    def test_long_similar_department_names_keep_their_own_manuals(self):
+        s = Store(os.path.join(self.tmp.name, "fsa.db"))
+        self.addCleanup(s.close)
+        (north, _), (south, _) = (s.create_department(f"Flight Operations Safety Reporting {x}", "H") for x in ("North", "South"))
+        self.kb.ingest(north["id"], [("North Manual.md", b"# North Manual\n\n## 1 Scope\n\nNorth only.\n")])
+        self.kb.ingest(south["id"], [("South Manual.md", b"# South Manual\n\n## 1 Scope\n\nSouth only.\n")])
+        self.assertEqual(self.kb.list_docs(north["id"]), ["north-manual"])
+        self.assertEqual(self.kb.list_docs(south["id"]), ["south-manual"])
+        self.kb.retire(south["id"])
+        self.assertEqual(self.kb.list_docs(north["id"]), ["north-manual"])  # retiring South leaves North alone
 
     def raw(self):
         with open(self.kb.inside(self.hit["file"]), encoding="utf-8") as f:

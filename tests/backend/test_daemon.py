@@ -1,6 +1,7 @@
 """The background dashboard server (backend/fsa/daemon.py): start, reuse, token, stop."""
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -46,6 +47,19 @@ class DaemonTests(unittest.TestCase):
         self.assertTrue(daemon.stop(self.root)["stopped"])
         self.assertFalse(daemon.status(self.root)["running"])
         self.assertIsNone(daemon.url(self.root))
+
+    def test_a_stale_pid_that_belongs_to_another_program_is_left_alone(self):
+        other = subprocess.Popen(["sleep", "300"])  # a program of the same user that now has the saved pid
+        self.addCleanup(other.kill)
+        os.makedirs(os.path.join(self.root, "_team"))
+        with open(os.path.join(self.root, "_team", "dashboard.json"), "w") as f:
+            json.dump({"pid": other.pid, "port": 48199, "token": "x", "version": "old"}, f)  # nothing listens on 48199
+        self.assertFalse(daemon.stop(self.root)["stopped"])
+        self.assertIsNone(other.poll())  # still running
+        self.assertFalse(os.path.exists(os.path.join(self.root, "_team", "dashboard.json")))
+        st = daemon.start(self.root, port=48140)  # start() must not kill it either
+        self.assertTrue(st["started"])
+        self.assertIsNone(other.poll())
 
     def test_dead_server_is_replaced(self):
         st = daemon.start(self.root, port=48120)
